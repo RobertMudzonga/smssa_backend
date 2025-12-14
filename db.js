@@ -1,5 +1,11 @@
 const { Pool } = require('pg');
-require('dotenv').config();
+
+// Load local .env only when not in production so deployed environments
+// (Render, Heroku, etc.) use their configured env vars instead of the
+// repository .env file which may disable SSL unintentionally.
+if (process.env.NODE_ENV !== 'production') {
+    require('dotenv').config();
+}
 
 // --- Configuration ---
 
@@ -13,19 +19,27 @@ if (!connectionString) {
 // Default SSL configuration for common cloud environments (e.g., Heroku, Render).
 // If your environment requires non-standard SSL settings, you might need to
 // modify this object. This typically ensures connection is secure.
-let poolConfig = {
-    connectionString: connectionString,
-    ssl: {
-        // Required for cloud providers that use self-signed certificates
-        // or where the client cannot verify the host's certificate.
-        rejectUnauthorized: process.env.NODE_ENV === 'production' ? false : true,
-    }
-};
+// Build pool configuration and handle SSL explicitly. In production we enable
+// SSL with `rejectUnauthorized: false` (common for managed Postgres providers)
+// unless `DB_SSL` is explicitly set to the string 'false'. For local
+// development we default to no SSL unless `DB_SSL` is 'true'.
+const poolConfig = { connectionString };
 
-// If the environment is not 'production', or if SSL is explicitly disabled,
-// we can remove the SSL object. This is a common pattern for local development.
-if (process.env.DB_SSL === 'false' || process.env.NODE_ENV !== 'production') {
-    poolConfig.ssl = false;
+if (process.env.NODE_ENV === 'production') {
+    // In production, enable SSL but allow self-signed certs (rejectUnauthorized: false)
+    // This matches behavior required by many PaaS Postgres providers.
+    if (process.env.DB_SSL === 'false') {
+        poolConfig.ssl = false;
+    } else {
+        poolConfig.ssl = { rejectUnauthorized: false };
+    }
+} else {
+    // Non-production: allow opt-in via DB_SSL='true' otherwise disable SSL
+    if (process.env.DB_SSL === 'true') {
+        poolConfig.ssl = { rejectUnauthorized: false };
+    } else {
+        poolConfig.ssl = false;
+    }
 }
 
 
