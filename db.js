@@ -1,10 +1,12 @@
 const { Pool } = require('pg');
 
-// Load local .env only when not in production so deployed environments
-// (Render, Heroku, etc.) use their configured env vars instead of the
-// repository .env file which may disable SSL unintentionally.
-if (process.env.NODE_ENV !== 'production') {
+// Load local .env only when `DATABASE_URL` is not already present. This
+// avoids loading the repository `.env` on hosts (like Render) that provide
+// `DATABASE_URL` but may not set NODE_ENV to 'production'. Allow forcing
+// dotenv via `LOAD_DOTENV=true` when needed.
+if (!process.env.DATABASE_URL && process.env.LOAD_DOTENV !== 'false') {
     require('dotenv').config();
+    console.log('.env loaded because DATABASE_URL was not set');
 }
 
 // --- Configuration ---
@@ -25,22 +27,38 @@ if (!connectionString) {
 // development we default to no SSL unless `DB_SSL` is 'true'.
 const poolConfig = { connectionString };
 
-if (process.env.NODE_ENV === 'production') {
-    // In production, enable SSL but allow self-signed certs (rejectUnauthorized: false)
-    // This matches behavior required by many PaaS Postgres providers.
+// Decide SSL based on explicit DB_SSL or the target host in DATABASE_URL.
+// Priority: if DB_SSL === 'false' -> disable. Else if DB_SSL === 'true' -> enable.
+// Otherwise, if DATABASE_URL points to a non-local host, enable SSL by default
+// (useful when running locally but connecting to hosted DBs like Render Postgres).
+try {
     if (process.env.DB_SSL === 'false') {
         poolConfig.ssl = false;
-    } else {
+    } else if (process.env.DB_SSL === 'true') {
         poolConfig.ssl = { rejectUnauthorized: false };
+    } else {
+        // Infer from the connection string host
+        const parsed = new URL(connectionString);
+        const host = parsed.hostname;
+        if (host && host !== 'localhost' && host !== '127.0.0.1') {
+            poolConfig.ssl = { rejectUnauthorized: false };
+        } else {
+            poolConfig.ssl = false;
+        }
     }
-} else {
-    // Non-production: allow opt-in via DB_SSL='true' otherwise disable SSL
+} catch (e) {
+    // If parsing fails for any reason, fall back to non-SSL unless explicitly set.
     if (process.env.DB_SSL === 'true') {
         poolConfig.ssl = { rejectUnauthorized: false };
     } else {
         poolConfig.ssl = false;
     }
 }
+// Log effective SSL decision (non-secret) to help debugging on hosts.
+try {
+    const sslEnabled = !!poolConfig.ssl && poolConfig.ssl !== false;
+    console.log(`DB SSL enabled: ${sslEnabled}`);
+} catch (e) {}
 
 
 // Create a connection pool using the connection string and configuration

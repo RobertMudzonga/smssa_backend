@@ -26,9 +26,13 @@ INSERT INTO prospect_stages (stage_id, name, display_order, description) VALUES
 (13, 'Archived', 13, 'Archived - no longer active')
 ON CONFLICT (stage_id) DO NOTHING;
 
--- Add foreign key constraint to prospects table
-ALTER TABLE prospects 
-ADD CONSTRAINT fk_prospects_stage 
-FOREIGN KEY (current_stage_id) 
-REFERENCES prospect_stages(stage_id)
-ON DELETE SET DEFAULT;
+-- Add foreign key constraint to prospects table if not already present
+DO $$
+BEGIN
+    IF to_regclass('public.prospects') IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_prospects_stage'
+    ) THEN
+        EXECUTE 'ALTER TABLE prospects ADD CONSTRAINT fk_prospects_stage FOREIGN KEY (current_stage_id) REFERENCES prospect_stages(stage_id) ON DELETE SET DEFAULT';
+    END IF;
+END
+$$;

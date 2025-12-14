@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS prospects (
 );
 
 -- Add a converted flag to leads if it doesn't already exist
-ALTER TABLE leads
+-- Use IF EXISTS so the migration is safe when the `leads` table isn't present yet.
+ALTER TABLE IF EXISTS leads
 ADD COLUMN IF NOT EXISTS converted BOOLEAN DEFAULT FALSE;
 
 -- Optional: create an index on lead_id for faster lookups
