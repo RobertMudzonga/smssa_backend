@@ -1,25 +1,42 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Determine SSL configuration based on environment
-const sslConfig = process.env.DB_SSL === 'true' 
-    ? { rejectUnauthorized: false } 
-    : false;
+// --- Configuration ---
 
-// Create a connection pool using environment variables
-const pool = new Pool({
-    user: process.env.DB_USER,
-    host: process.env.DB_HOST,
-    database: process.env.DB_NAME,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-    ssl: sslConfig
-});
+// Use the standard DATABASE_URL environment variable.
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+    throw new Error('DATABASE_URL environment variable is not set.');
+}
+
+// Default SSL configuration for common cloud environments (e.g., Heroku, Render).
+// If your environment requires non-standard SSL settings, you might need to
+// modify this object. This typically ensures connection is secure.
+let poolConfig = {
+    connectionString: connectionString,
+    ssl: {
+        // Required for cloud providers that use self-signed certificates
+        // or where the client cannot verify the host's certificate.
+        rejectUnauthorized: process.env.NODE_ENV === 'production' ? false : true,
+    }
+};
+
+// If the environment is not 'production', or if SSL is explicitly disabled,
+// we can remove the SSL object. This is a common pattern for local development.
+if (process.env.DB_SSL === 'false' || process.env.NODE_ENV !== 'production') {
+    poolConfig.ssl = false;
+}
+
+
+// Create a connection pool using the connection string and configuration
+const pool = new Pool(poolConfig);
+
+// --- Error Handling and Query Functions ---
 
 // Handle pool errors
 pool.on('error', (err, client) => {
     // Log pool errors but do not crash the entire process immediately.
-    // Exiting silently made the server drop connections without usable logs.
     console.error('Unexpected error on idle client', err);
     // Optionally: implement reconnection/backoff or alerting here.
 });
@@ -37,5 +54,5 @@ const query = (text, params) => {
 
 module.exports = {
     query,
-    pool, // Export pool for transaction support (used in projects.js)
+    pool, // Export pool for transaction support
 };
