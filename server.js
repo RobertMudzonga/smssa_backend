@@ -1,23 +1,25 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+const { exec } = require('child_process');
 
-// Initialize Express app
+if (process.env.NODE_ENV !== 'production') {
+	require('dotenv').config();
+}
+
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = Number(process.env.PORT) || 3000;
 
-// Middleware
-// Enable CORS for frontend access (adjust origin for production)
-app.use(cors({
-    origin: '*', // Allows all origins for development
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
-}));
-// Parse JSON bodies from requests (essential for webhooks)
+app.use(
+	cors({
+		origin: process.env.CORS_ORIGIN || '*',
+		methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+	})
+);
+
 app.use(express.json());
-// Parse URL-encoded bodies
 app.use(express.urlencoded({ extended: true }));
 
-// --- API Routes ---
+// Routes
 const leadsRouter = require('./routes/leads');
 const projectsRouter = require('./routes/projects');
 const prospectsRouter = require('./routes/prospects');
@@ -25,12 +27,10 @@ const documentsRouter = require('./routes/documents');
 const employeesRouter = require('./routes/employees');
 const appraisalsRouter = require('./routes/appraisals');
 
-// Health check and root route
 app.get('/', (req, res) => {
-    res.send('SMSSA Backend API Running');
+	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
 });
 
-// Main application routes
 app.use('/api/leads', leadsRouter);
 app.use('/api/projects', projectsRouter);
 app.use('/api/prospects', prospectsRouter);
@@ -38,65 +38,77 @@ app.use('/api/documents', documentsRouter);
 app.use('/api/employees', employeesRouter);
 app.use('/api/appraisals', appraisalsRouter);
 
-
-// Global Error Handler
+// Global error handler
 app.use((err, req, res, next) => {
-    console.error('GLOBAL ERROR HANDLER:');
-    console.error(err.stack);
-    res.status(500).send('Something broke!');
+	console.error(err);
+	const status = err && err.status ? err.status : 500;
+	const payload =
+		process.env.NODE_ENV === 'production'
+			? { error: 'Internal Server Error' }
+			: { error: err.message || 'Internal Server Error', stack: err.stack };
+	res.status(status).json(payload);
 });
 
-// Catch uncaught exceptions
 process.on('uncaughtException', (err) => {
-    console.error('UNCAUGHT EXCEPTION:', err);
-    process.exit(1);
+	console.error('Uncaught Exception:', err);
+	setTimeout(() => process.exit(1), 100);
 });
 
-// Catch unhandled rejections
-process.on('unhandledRejection', (err) => {
-    console.error('UNHANDLED REJECTION:', err);
-    process.exit(1);
+process.on('unhandledRejection', (reason) => {
+	console.error('Unhandled Rejection:', reason);
+	setTimeout(() => process.exit(1), 100);
 });
-
-const { exec } = require('child_process');
 
 async function runMigrationsIfEnabled() {
-    const auto = process.env.AUTO_MIGRATE;
-    if (auto && auto.toLowerCase() === 'false') {
-        console.log('AUTO_MIGRATE=false — skipping migrations');
-        return;
-    }
+	const auto = String(process.env.AUTO_MIGRATE || '').toLowerCase();
+	if (auto === 'false' || auto === '0') {
+		console.log('AUTO_MIGRATE disabled; skipping migrations');
+		return;
+	}
 
-    return new Promise((resolve, reject) => {
-        console.log('Running migrations...');
-        const child = exec('node migrate.js', { cwd: __dirname }, (err, stdout, stderr) => {
-            if (err) {
-                console.error('Migration process failed:', err);
-                console.error(stderr);
-                return reject(err);
-            }
-            if (stdout) console.log(stdout);
-            if (stderr) console.error(stderr);
-            console.log('Migrations finished successfully');
-            resolve();
-        });
-        // mirror child output to this process stdout/stderr
-        child.stdout?.pipe(process.stdout);
-        child.stderr?.pipe(process.stderr);
-    });
+	return new Promise((resolve, reject) => {
+		console.log('Running migrations...');
+		const child = exec('node migrate.js', { cwd: __dirname }, (err, stdout, stderr) => {
+			if (err) {
+				console.error('Migration process failed:', err);
+				if (stderr) console.error(stderr);
+				return reject(err);
+			}
+			if (stdout) console.log(stdout);
+			if (stderr) console.error(stderr);
+			console.log('Migrations finished successfully');
+			resolve();
+		});
+
+		if (child.stdout) child.stdout.pipe(process.stdout);
+		if (child.stderr) child.stderr.pipe(process.stderr);
+	});
 }
 
-// Start Server (run migrations first unless disabled)
+let server;
 (async () => {
-    try {
-        await runMigrationsIfEnabled();
-    } catch (err) {
-        console.error('Unable to run migrations. Exiting.');
-        process.exit(1);
-    }
+	try {
+		await runMigrationsIfEnabled();
+	} catch (err) {
+		console.error('Unable to run migrations. Exiting.');
+		process.exit(1);
+	}
 
-    app.listen(PORT, () => {
-        console.log(`SMSSA Backend running on port ${PORT}`);
-        console.log(`Access at http://localhost:${PORT}`);
-    });
+	server = app.listen(PORT, () => {
+		console.log(`SMSSA Backend running on port ${PORT}`);
+	});
 })();
+
+function gracefulShutdown() {
+	console.log('Shutting down gracefully...');
+	if (server && server.close) {
+		server.close(() => process.exit(0));
+	} else {
+		process.exit(0);
+	}
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+module.exports = app;
