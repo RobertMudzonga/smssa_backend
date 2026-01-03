@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
-console.log('Loaded routes/leads.js');
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 
 // --- 1. GET ALL LEADS (List/Kanban View) ---
 router.get('/', async (req, res) => {
@@ -159,50 +159,88 @@ router.delete('/:id', async (req, res) => {
 });
 
 // --- 6. ZAPIER / WEBHOOK ENDPOINT (Lead Ingestion) ---
-// Public endpoint for POST requests from Zapier
+// Public endpoint for POST requests from Zapier and other form providers
 // Endpoint: POST /api/leads/webhook
 router.post('/webhook', async (req, res) => {
-    const { 
-        first_name, last_name, email, phone, company, 
-        source = 'Webhook', 
-        source_id = null, 
-        form_name = null 
-    } = req.body;
+    // Optional token-based protection: set WEBHOOK_SECRET env var and send header
+    if (WEBHOOK_SECRET) {
+        const token = req.headers['x-webhook-token'] || req.headers['x-zapier-token'] || req.query.token;
+        if (!token || token !== WEBHOOK_SECRET) {
+            return res.status(401).json({ error: 'Invalid or missing webhook token' });
+        }
+    }
 
-    // Basic validation
-    if (!first_name || !last_name || !email) {
-        return res.status(400).json({ error: "Missing required fields (first_name, last_name, email)." });
+    const body = req.body || {};
+
+    // Helper: flexible field extraction supporting many Zapier/form providers
+    function getField(candidates = []) {
+        for (const key of candidates) {
+            if (body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== '') return body[key];
+        }
+        return null;
+    }
+
+    // Extract name parts
+    let first_name = getField(['first_name', 'firstname', 'firstName', 'given_name', 'givenName']);
+    let last_name = getField(['last_name', 'lastname', 'lastName', 'family_name', 'familyName']);
+    const fullName = getField(['name', 'full_name', 'fullName', 'contact_name', 'ContactName']);
+    if ((!first_name || !last_name) && fullName) {
+        const parts = String(fullName).trim().split(/\s+/);
+        first_name = first_name || parts[0] || null;
+        last_name = last_name || parts.slice(1).join(' ') || parts[0] || null;
+    }
+
+    // Extract other fields with common fallbacks
+    const email = getField(['email', 'email_address', 'emailAddress', 'Email']);
+    const phone = getField(['phone', 'phone_number', 'phoneNumber', 'mobile', 'Mobile']);
+    const company = getField(['company', 'company_name', 'Company', 'organization', 'org']);
+    const source = getField(['source', 'platform', 'utm_source']) || 'Webhook';
+    const source_id = getField(['source_id', 'lead_id', 'zap_id', 'entry_id']) || null;
+    const form_name = getField(['form_name', 'form', 'form_id', 'formName']) || null;
+
+    // Basic validation: prefer email, fallback to phone
+    if (!email && !phone) {
+        return res.status(400).json({ error: 'Missing contact fields: provide email or phone' });
     }
 
     try {
-        // Check for existing lead by email
-        const existing = await db.query('SELECT lead_id, notes FROM leads WHERE email = $1', [email]);
-        
-        if (existing.rows.length > 0) {
-            // Update notes on existing lead to log the new inquiry
-            const lead = existing.rows[0];
-            const newNote = `\n[${new Date().toISOString()}] New inquiry received via ${source} (Form: ${form_name || 'N/A'})`;
-            await db.query(
-                `UPDATE leads SET notes = CONCAT($1, $2), updated_at = CURRENT_TIMESTAMP WHERE lead_id = $3`,
-                [lead.notes || '', newNote, lead.lead_id]
-            );
-            return res.status(200).json({ message: "Lead already exists; updated notes.", id: lead.lead_id });
+        // Look up existing lead by email (preferred) or phone
+        let existing = null;
+        if (email) {
+            const r = await db.query('SELECT lead_id, notes FROM leads WHERE LOWER(email) = LOWER($1) LIMIT 1', [email]);
+            if (r.rows.length > 0) existing = r.rows[0];
+        }
+        if (!existing && phone) {
+            const r2 = await db.query('SELECT lead_id, notes FROM leads WHERE phone = $1 LIMIT 1', [phone]);
+            if (r2.rows.length > 0) existing = r2.rows[0];
         }
 
-        // Create new lead in Stage 1 (Opportunity)
-        const result = await db.query(`
-            INSERT INTO leads (
-                first_name, last_name, email, phone, company, 
-                source, source_id, form_id, current_stage_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1) 
-            RETURNING lead_id`,
-            [first_name, last_name, email, phone, company, source, source_id, form_name]
+        if (existing) {
+            const newNote = `\n[${new Date().toISOString()}] New inquiry received via ${source} (Form: ${form_name || 'N/A'})`;
+            await db.query(
+                `UPDATE leads SET notes = CONCAT(COALESCE(notes, ''), $1), updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2`,
+                [newNote, existing.lead_id]
+            );
+            return res.status(200).json({ message: 'Lead already exists; updated notes.', id: existing.lead_id });
+        }
+
+        // Insert new lead. Use provided name parts or fallbacks.
+        const insertFirst = first_name || (fullName ? String(fullName).split(/\s+/)[0] : null);
+        const insertLast = last_name || (fullName ? String(fullName).split(/\s+/).slice(1).join(' ') : null);
+
+        const result = await db.query(
+            `INSERT INTO leads (
+                first_name, last_name, email, phone, company,
+                source, source_id, form_id, cold_lead_stage, created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,101,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING lead_id`,
+            [insertFirst, insertLast, email, phone, company, source, source_id, form_name]
         );
 
-        res.status(201).json({ message: "New Lead created successfully", id: result.rows[0].lead_id });
+        console.log('Webhook created lead', result.rows[0].lead_id, 'source=', source, 'form=', form_name);
+        res.status(201).json({ message: 'New Lead created successfully', id: result.rows[0].lead_id });
     } catch (err) {
-        console.error("Webhook Error:", err);
-        res.status(500).json({ error: "Failed to process webhook" });
+        console.error('Webhook Error:', err);
+        res.status(500).json({ error: 'Failed to process webhook', detail: err.message });
     }
 });
 

@@ -13,7 +13,15 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-    const { project_id = null, folder_id = null, uploaded_by = null } = req.body;
+    // Restrict upload endpoint to specific admin emails only
+    const allowedEmails = new Set(['munya@immigrationspecialists.co.za', 'robert@immigrationspecialists.co.za']);
+    const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
+    if (!uploaded_by || !allowedEmails.has(String(uploaded_by).toLowerCase())) {
+      console.warn('Unauthorized upload attempt', { uploaded_by, ip: req.ip, path: req.originalUrl });
+      return res.status(403).json({ error: 'Uploads are disabled for your account' });
+    }
+
+    const { project_id = null, folder_id = null } = req.body;
     const file = req.file;
 
     const result = await db.query(

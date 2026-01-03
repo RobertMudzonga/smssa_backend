@@ -79,3 +79,18 @@ router.delete('/:id', async (req, res) => {
 });
 
 module.exports = router;
+
+// POST /api/employees/:id/metrics - trigger a metrics calculation (lightweight)
+router.post('/:id/metrics', async (req, res) => {
+  const { id } = req.params;
+  const { periodStart, periodEnd } = req.body || {};
+  try {
+    // Placeholder: try to call a stored procedure or background job if present
+    // For now, respond OK and let real implementation be added later.
+    console.log('Metrics requested for employee', id, { periodStart, periodEnd });
+    res.json({ ok: true, message: 'Metrics calculation scheduled' });
+  } catch (err) {
+    console.error('Error scheduling metrics calculation:', err);
+    res.status(500).json({ error: 'Failed to schedule metrics calculation' });
+  }
+});

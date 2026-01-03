@@ -26,6 +26,12 @@ const prospectsRouter = require('./routes/prospects');
 const documentsRouter = require('./routes/documents');
 const employeesRouter = require('./routes/employees');
 const appraisalsRouter = require('./routes/appraisals');
+const importsRouter = require('./routes/imports');
+const checklistsRouter = require('./routes/checklists');
+const functionsRouter = require('./routes/functions');
+const templatesRouter = require('./routes/templates');
+const authRouter = require('./routes/auth');
+const clientPortalRouter = require('./routes/client_portal');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -37,6 +43,12 @@ app.use('/api/prospects', prospectsRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/employees', employeesRouter);
 app.use('/api/appraisals', appraisalsRouter);
+app.use('/api/import', importsRouter);
+app.use('/api/checklists', checklistsRouter);
+app.use('/api/functions', functionsRouter);
+app.use('/api/templates', templatesRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/client-portal', clientPortalRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {

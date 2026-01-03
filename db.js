@@ -11,11 +11,14 @@ if (!process.env.DATABASE_URL && process.env.LOAD_DOTENV !== 'false') {
 
 // --- Configuration ---
 
-// Use the standard DATABASE_URL environment variable.
-const connectionString = process.env.DATABASE_URL;
+// Use the standard DATABASE_URL environment variable. If not present, fall
+// back to EXTERNAL_DATABASE_URL or INTERNAL_DATABASE_URL which may be set
+// when connecting to a managed DB (e.g., Render). This allows running
+// migrations against the remote DB when local DATABASE_URL isn't set.
+const connectionString = process.env.DATABASE_URL || process.env.EXTERNAL_DATABASE_URL || process.env.INTERNAL_DATABASE_URL;
 
 if (!connectionString) {
-    throw new Error('DATABASE_URL environment variable is not set.');
+    throw new Error('DATABASE_URL environment variable is not set. Set DATABASE_URL or EXTERNAL_DATABASE_URL.');
 }
 
 // Default SSL configuration for common cloud environments (e.g., Heroku, Render).
