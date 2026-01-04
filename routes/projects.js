@@ -270,8 +270,7 @@ router.get('/', async (req, res) => {
                  FROM projects p
                  ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
                  ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
-                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC
-                 LIMIT 200`;
+                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC`;
 
         const result = await db.query(sql);
 
