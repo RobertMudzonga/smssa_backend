@@ -7,8 +7,9 @@ ALTER TABLE projects
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM information_schema.constraint_column_usage
-    WHERE table_name = 'projects' AND constraint_name = 'projects_project_manager_id_fkey'
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'projects_project_manager_id_fkey' 
+    AND conrelid = 'projects'::regclass
   ) THEN
     ALTER TABLE projects
       ADD CONSTRAINT projects_project_manager_id_fkey
