@@ -337,36 +337,67 @@ router.delete('/:id', async (req, res) => {
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
+        console.log(`Attempting to delete project with id: ${id}`);
+        
         // Determine actual id column used by projects table (project_id or id)
         const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
         const existingCols = colRes.rows.map(r => r.column_name);
         const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
 
-        // Attempt best-effort deletion of related data (these usually reference project_id)
-        try {
-            await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
-        } catch (e) {
-            console.warn('Warning deleting project_documents for project', id, e && e.message ? e.message : e);
-        }
-        try {
-            await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
-        } catch (e) {
-            console.warn('Warning deleting document_folders for project', id, e && e.message ? e.message : e);
-        }
+        console.log(`Project ID column identified as: ${idCol}`);
 
         if (!idCol) {
             throw new Error('Unable to determine projects id column (expected project_id or id)');
         }
 
+        // Check if project exists first
+        const checkQuery = `SELECT * FROM projects WHERE ${idCol} = $1`;
+        const checkResult = await client.query(checkQuery, [id]);
+        
+        if (checkResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            console.log(`Project ${id} not found`);
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        console.log(`Found project ${id}, proceeding with deletion of related records`);
+
+        // Attempt best-effort deletion of related data (these usually reference project_id)
+        try {
+            const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
+            console.log(`Deleted ${docResult.rowCount} project_documents for project ${id}`);
+        } catch (e) {
+            console.warn('Warning deleting project_documents for project', id, ':', e && e.message ? e.message : e);
+        }
+        
+        try {
+            const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
+            console.log(`Deleted ${folderResult.rowCount} document_folders for project ${id}`);
+        } catch (e) {
+            console.warn('Warning deleting document_folders for project', id, ':', e && e.message ? e.message : e);
+        }
+
+        // Now delete the project itself
         const deleteQuery = `DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`;
+        console.log(`Executing: ${deleteQuery} with id=${id}`);
         const result = await client.query(deleteQuery, [id]);
+        
         await client.query('COMMIT');
-        if (result.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
+        console.log(`Successfully deleted project ${id}`);
         res.json({ ok: true, deleted: result.rows[0] });
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error('Project delete failed:', err);
-        res.status(500).json({ error: 'Failed to delete project' });
+        console.error('Project delete failed for id', id, ':', err);
+        console.error('Error details:', {
+            message: err.message,
+            code: err.code,
+            detail: err.detail,
+            stack: err.stack
+        });
+        res.status(500).json({ 
+            error: 'Failed to delete project',
+            details: err.message 
+        });
     } finally {
         client.release();
     }
