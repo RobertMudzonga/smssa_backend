@@ -98,27 +98,65 @@ router.post('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        console.log(`Fetching project details for id: ${id}`);
 
-        const project = await db.query(`
-            SELECT p.*, 
-                   l.first_name, l.last_name, l.company, l.email,
-                   v.name as visa_type_name
-            FROM projects p
-            LEFT JOIN leads l ON p.client_lead_id = l.lead_id
-            LEFT JOIN visa_types v ON p.visa_type_id = v.visa_type_id
-            WHERE p.project_id = $1
-        `, [id]);
+        // Check which columns exist in projects table
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const cols = colRes.rows.map(r => r.column_name);
+        const idCol = cols.includes('project_id') ? 'project_id' : (cols.includes('id') ? 'id' : 'project_id');
 
-        if (project.rows.length === 0) return res.status(404).json({ error: "Project not found" });
+        // Check if related tables exist
+        const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
+        const visaTypesExists = await db.query("SELECT to_regclass('public.visa_types') as exists");
+        const hasLeadsTable = leadsExists.rows[0] && leadsExists.rows[0].exists;
+        const hasVisaTypesTable = visaTypesExists.rows[0] && visaTypesExists.rows[0].exists;
 
-        const documents = await db.query(`
-            SELECT pd.project_document_id, pd.project_id, pd.status, pd.notes, pd.date_received,
-                   d.name as document_name, d.description
-            FROM project_documents pd
-            JOIN documents d ON pd.document_id = d.document_id
-            WHERE pd.project_id = $1
-            ORDER BY d.name ASC
-        `, [id]);
+        // Build query with conditional joins
+        let joins = '';
+        let selectFields = 'p.*';
+        
+        if (hasLeadsTable && cols.includes('client_lead_id')) {
+            joins += ' LEFT JOIN leads l ON p.client_lead_id = l.lead_id';
+            selectFields += ', l.first_name, l.last_name, l.company, l.email';
+        }
+        
+        if (hasVisaTypesTable && cols.includes('visa_type_id')) {
+            joins += ' LEFT JOIN visa_types v ON p.visa_type_id = v.visa_type_id';
+            selectFields += ', v.name as visa_type_name';
+        }
+
+        const projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.${idCol} = $1`;
+        console.log(`Executing query: ${projectQuery}`);
+        
+        const project = await db.query(projectQuery, [id]);
+
+        if (project.rows.length === 0) {
+            console.log(`Project ${id} not found`);
+            return res.status(404).json({ error: "Project not found" });
+        }
+
+        console.log(`Found project ${id}, fetching documents`);
+
+        // Fetch documents if tables exist
+        let documents = { rows: [] };
+        try {
+            const docsTableExists = await db.query("SELECT to_regclass('public.project_documents') as exists");
+            if (docsTableExists.rows[0] && docsTableExists.rows[0].exists) {
+                documents = await db.query(`
+                    SELECT pd.project_document_id, pd.project_id, pd.status, pd.notes, pd.date_received,
+                           d.name as document_name, d.description
+                    FROM project_documents pd
+                    LEFT JOIN documents d ON pd.document_id = d.document_id
+                    WHERE pd.project_id = $1
+                    ORDER BY d.name ASC
+                `, [id]);
+            }
+        } catch (docErr) {
+            console.warn('Error fetching documents for project', id, ':', docErr.message || docErr);
+            // Continue without documents
+        }
+
+        console.log(`Successfully retrieved project ${id} with ${documents.rows.length} documents`);
 
         res.json({
             project: project.rows[0],
@@ -126,8 +164,16 @@ router.get('/:id', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Error fetching project details:", err);
-        res.status(500).json({ error: "Server error" });
+        console.error("Error fetching project details for id", req.params.id, ":", err);
+        console.error('Error details:', {
+            message: err.message,
+            code: err.code,
+            detail: err.detail
+        });
+        res.status(500).json({ 
+            error: "Server error",
+            details: err.message 
+        });
     }
 });
 
