@@ -71,3 +71,15 @@ Make sure both the frontend and backend are running:
 
 1. Backend: `npm start` (in smssa-backend folder)
 2. Frontend: `npm run dev` (in main project folder)
+
+## Deployment / Frontend env
+
+- **REACT_APP_API_BASE**: When building the frontend for production, set the environment variable `REACT_APP_API_BASE` to the base URL of the deployed backend (for example `https://my-backend.onrender.com`). The frontend will make requests to `REACT_APP_API_BASE + '/api/...'`.
+
+- Example (Vercel): In your project settings -> Environment Variables add `REACT_APP_API_BASE` for the `Production` and `Preview` environments and redeploy the site.
+
+- Quick test against backend:
+
+```bash
+curl -X POST "https://your-backend.onrender.com/api/auth/signup" -H "Content-Type: application/json" -d '{"email":"you@immigrationspecialists.co.za","password":"yourpass"}'
+```

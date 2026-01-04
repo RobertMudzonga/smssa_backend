@@ -32,6 +32,7 @@ const functionsRouter = require('./routes/functions');
 const templatesRouter = require('./routes/templates');
 const authRouter = require('./routes/auth');
 const clientPortalRouter = require('./routes/client_portal');
+const debugRouter = require('./routes/debug');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -49,6 +50,7 @@ app.use('/api/functions', functionsRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/client-portal', clientPortalRouter);
+app.use('/api/debug', debugRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
