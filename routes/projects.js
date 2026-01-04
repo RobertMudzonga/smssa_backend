@@ -331,46 +331,24 @@ router.patch('/documents/:docId', async (req, res) => {
     }
 });
 
-module.exports = router;
-
-// DELETE /api/projects/:id - delete project and related data
+// DELETE /api/projects/:id - delete project and related data (allow deleting any project)
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
-        // Check current status - only allow delete when project is Completed
-        try {
-            const stat = await client.query('SELECT status FROM projects WHERE project_id = $1', [id]);
-            if (stat.rows.length === 0) {
-                await client.query('ROLLBACK');
-                return res.status(404).json({ error: 'Project not found' });
-            }
-            const statusVal = (stat.rows[0].status || '').toString().toLowerCase();
-            if (statusVal !== 'completed' && statusVal !== 'complete') {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ error: 'Cannot delete active project. Only completed projects may be deleted.' });
-            }
-        } catch (e) {
-            // If selecting status fails, roll back and return error
-            await client.query('ROLLBACK');
-            console.error('Failed to verify project status before delete:', e);
-            return res.status(500).json({ error: 'Failed to verify project status' });
-        }
-        // remove project documents if table exists
+        // Attempt best-effort deletion of related data, then the project row itself.
         try {
             await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
         } catch (e) {
-            // ignore if table doesn't exist or other non-fatal issue
             console.warn('Warning deleting project_documents for project', id, e && e.message ? e.message : e);
         }
-        // remove document folders
         try {
             await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
         } catch (e) {
             console.warn('Warning deleting document_folders for project', id, e && e.message ? e.message : e);
         }
-        // delete the project row
+
         const result = await client.query('DELETE FROM projects WHERE project_id = $1 RETURNING *', [id]);
         await client.query('COMMIT');
         if (result.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
@@ -383,6 +361,8 @@ router.delete('/:id', async (req, res) => {
         client.release();
     }
 });
+
+module.exports = router;
 
 // POST /api/projects/create - lightweight project creation helper
 router.post('/create', async (req, res) => {
