@@ -190,11 +190,13 @@ router.get('/', async (req, res) => {
             }
         }
 
-        const sql = `SELECT ${selectCols.join(', ') || 'p.project_id as project_id'}, ${joinLead ? 'l.first_name, l.last_name, l.company' : ''}
-                     FROM projects p
-                     ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
-                     ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC
-                     LIMIT 200`;
+        const leadSelect = joinLead ? 'l.first_name, l.last_name, l.company' : '';
+        const selectList = (selectCols.join(', ') || 'p.project_id as project_id') + (leadSelect ? ', ' + leadSelect : '');
+        const sql = `SELECT ${selectList}
+                 FROM projects p
+                 ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
+                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC
+                 LIMIT 200`;
 
         const result = await db.query(sql);
 
