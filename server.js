@@ -19,6 +19,19 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Normalize duplicate /api/api/... paths (some frontends may prepend /api twice)
+app.use((req, res, next) => {
+	try {
+		if (req.path && req.path.indexOf('/api/api/') === 0) {
+			// rewrite the url to collapse duplicate /api prefix
+			req.url = req.url.replace('/api/api/', '/api/');
+		}
+	} catch (e) {
+		// ignore and continue
+	}
+	next();
+});
+
 // Routes
 const leadsRouter = require('./routes/leads');
 const projectsRouter = require('./routes/projects');
