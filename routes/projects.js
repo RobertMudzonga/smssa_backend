@@ -483,6 +483,98 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
+// DELETE /api/projects/batch - bulk delete multiple projects
+router.delete('/batch', async (req, res) => {
+    const { ids } = req.body; // Expect: { ids: [1, 2, 3] }
+    
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'Invalid request: provide ids array' });
+    }
+
+    const client = await db.pool.connect();
+    const results = { deleted: [], failed: [] };
+
+    try {
+        // Determine actual id column
+        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+        const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
+
+        if (!idCol) {
+            throw new Error('Unable to determine projects id column');
+        }
+
+        // Check which related tables exist
+        const tableChecks = await client.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('project_documents', 'documents', 'document_folders', 'checklists')
+        `);
+        const existingTables = new Set(tableChecks.rows.map(r => r.table_name));
+
+        // Delete each project
+        for (const id of ids) {
+            const client2 = await db.pool.connect();
+            try {
+                await client2.query('BEGIN');
+                console.log(`Batch delete: processing project ${id}`);
+
+                // Check if project exists
+                const checkResult = await client2.query(`SELECT * FROM projects WHERE ${idCol} = $1`, [id]);
+                if (checkResult.rows.length === 0) {
+                    results.failed.push({ id, reason: 'Project not found' });
+                    await client2.query('ROLLBACK');
+                    continue;
+                }
+
+                // Delete related records
+                if (existingTables.has('project_documents')) {
+                    await client2.query('DELETE FROM project_documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('documents')) {
+                    await client2.query('DELETE FROM documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('document_folders')) {
+                    await client2.query('DELETE FROM document_folders WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('checklists')) {
+                    await client2.query('DELETE FROM checklists WHERE project_id = $1', [id]).catch(() => null);
+                }
+
+                // Delete project
+                const delResult = await client2.query(`DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`, [id]);
+                await client2.query('COMMIT');
+                
+                results.deleted.push({ id, project: delResult.rows[0] });
+                console.log(`Batch delete: successfully deleted project ${id}`);
+            } catch (err) {
+                await client2.query('ROLLBACK').catch(() => null);
+                results.failed.push({ id, reason: err.message });
+                console.error(`Batch delete: failed for project ${id}:`, err.message);
+            } finally {
+                client2.release();
+            }
+        }
+
+        res.json({ 
+            ok: true,
+            deleted: results.deleted,
+            failed: results.failed,
+            summary: `Deleted ${results.deleted.length}/${ids.length} projects`
+        });
+
+    } catch (err) {
+        console.error('Batch delete error:', err);
+        res.status(500).json({ 
+            error: 'Batch delete failed',
+            details: err.message 
+        });
+    } finally {
+        client.release();
+    }
+});
+
 // POST /api/projects/create - lightweight project creation helper
 router.post('/create', async (req, res) => {
     const payload = req.body || {};
