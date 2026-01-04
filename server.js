@@ -122,7 +122,21 @@ function gracefulShutdown() {
 	}
 }
 
-process.on('SIGINT', gracefulShutdown);
-process.on('SIGTERM', gracefulShutdown);
+// Register signal handlers with additional diagnostics to help track unexpected shutdowns
+console.log('Registering signal handlers for SIGINT and SIGTERM');
+process.on('SIGINT', () => {
+	console.log('SIGINT received - calling gracefulShutdown(); stack:');
+	console.trace();
+	gracefulShutdown();
+});
+process.on('SIGTERM', () => {
+	console.log('SIGTERM received - calling gracefulShutdown(); stack:');
+	console.trace();
+	gracefulShutdown();
+});
+
+process.on('exit', (code) => {
+	console.log('Process exiting with code', code);
+});
 
 module.exports = app;

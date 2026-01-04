@@ -175,8 +175,20 @@ router.get('/', async (req, res) => {
         add('payment_amount');
         add('created_at');
 
-        // Always include lead names when available
-        const joinLead = cols.includes('client_lead_id');
+        // Always include lead names when available, but only join if the `leads` table exists
+        let joinLead = cols.includes('client_lead_id');
+        if (joinLead) {
+            try {
+                const leadTable = await db.query("SELECT to_regclass('public.leads') as exists");
+                if (!leadTable.rows[0] || !leadTable.rows[0].exists) {
+                    console.warn('Leads table not present; skipping join in projects list');
+                    joinLead = false;
+                }
+            } catch (e) {
+                console.warn('Error checking leads table existence, skipping join:', e && e.message ? e.message : e);
+                joinLead = false;
+            }
+        }
 
         const sql = `SELECT ${selectCols.join(', ') || 'p.project_id as project_id'}, ${joinLead ? 'l.first_name, l.last_name, l.company' : ''}
                      FROM projects p
