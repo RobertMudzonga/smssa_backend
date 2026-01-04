@@ -408,37 +408,53 @@ router.delete('/:id', async (req, res) => {
 
         console.log(`Found project ${id}, proceeding with deletion of related records`);
 
+        // Check which related tables exist to avoid transaction abort on missing tables
+        const tableChecks = await client.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('project_documents', 'documents', 'document_folders', 'checklists')
+        `);
+        const existingTables = new Set(tableChecks.rows.map(r => r.table_name));
+        console.log('Existing related tables:', Array.from(existingTables));
+
         // Delete all related data in the correct order (respecting foreign keys)
-        // 1. Delete project_documents first (no FK to other tables)
-        try {
-            const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
-            console.log(`Deleted ${docResult.rowCount} project_documents for project ${id}`);
-        } catch (e) {
-            console.warn('Warning deleting project_documents for project', id, ':', e && e.message ? e.message : e);
+        // Only attempt deletions for tables that actually exist
+        
+        if (existingTables.has('project_documents')) {
+            try {
+                const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
+                console.log(`Deleted ${docResult.rowCount} project_documents for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting project_documents for project', id, ':', e && e.message ? e.message : e);
+            }
         }
         
-        // 2. Delete documents that reference this project
-        try {
-            const docsResult = await client.query('DELETE FROM documents WHERE project_id = $1', [id]);
-            console.log(`Deleted ${docsResult.rowCount} documents for project ${id}`);
-        } catch (e) {
-            console.warn('Warning deleting documents for project', id, ':', e && e.message ? e.message : e);
+        if (existingTables.has('documents')) {
+            try {
+                const docsResult = await client.query('DELETE FROM documents WHERE project_id = $1', [id]);
+                console.log(`Deleted ${docsResult.rowCount} documents for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting documents for project', id, ':', e && e.message ? e.message : e);
+            }
         }
         
-        // 3. Delete document_folders for this project
-        try {
-            const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
-            console.log(`Deleted ${folderResult.rowCount} document_folders for project ${id}`);
-        } catch (e) {
-            console.warn('Warning deleting document_folders for project', id, ':', e && e.message ? e.message : e);
+        if (existingTables.has('document_folders')) {
+            try {
+                const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
+                console.log(`Deleted ${folderResult.rowCount} document_folders for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting document_folders for project', id, ':', e && e.message ? e.message : e);
+            }
         }
         
-        // 4. Delete any checklists for this project (if table exists)
-        try {
-            const checklistResult = await client.query('DELETE FROM checklists WHERE project_id = $1', [id]);
-            console.log(`Deleted ${checklistResult.rowCount} checklists for project ${id}`);
-        } catch (e) {
-            console.warn('Warning deleting checklists for project', id, ':', e && e.message ? e.message : e);
+        if (existingTables.has('checklists')) {
+            try {
+                const checklistResult = await client.query('DELETE FROM checklists WHERE project_id = $1', [id]);
+                console.log(`Deleted ${checklistResult.rowCount} checklists for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting checklists for project', id, ':', e && e.message ? e.message : e);
+            }
         }
 
         // Now delete the project itself
