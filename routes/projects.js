@@ -5,7 +5,7 @@ const db = require('../db');
 // --- 1. CREATE PROJECT (Converts Lead to Project with Auto-Checklist) ---
 // This is called when a lead in Stage 13 ('Won') is converted.
 router.post('/', async (req, res) => {
-    const { client_lead_id, visa_type_id, assigned_user_id } = req.body;
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id } = req.body;
     
     // Start transaction
     const client = await db.pool.connect();
@@ -38,6 +38,7 @@ router.post('/', async (req, res) => {
         if (cols.includes('current_stage')) { insertCols.push('current_stage'); values.push(1); placeholders.push(`$${idx++}`); }
         // default projects should be active unless otherwise specified
         if (cols.includes('status')) { insertCols.push('status'); values.push('Active'); placeholders.push(`$${idx++}`); }
+        if (cols.includes('project_manager_id')) { insertCols.push('project_manager_id'); values.push(project_manager_id || null); placeholders.push(`$${idx++}`); }
 
         if (insertCols.length === 0) {
             throw new Error('No known insertable columns found in projects table');
@@ -108,8 +109,10 @@ router.get('/:id', async (req, res) => {
         // Check if related tables exist
         const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
         const visaTypesExists = await db.query("SELECT to_regclass('public.visa_types') as exists");
+        const employeesExists = await db.query("SELECT to_regclass('public.employees') as exists");
         const hasLeadsTable = leadsExists.rows[0] && leadsExists.rows[0].exists;
         const hasVisaTypesTable = visaTypesExists.rows[0] && visaTypesExists.rows[0].exists;
+        const hasEmployeesTable = employeesExists.rows[0] && employeesExists.rows[0].exists;
 
         // Build query with conditional joins
         let joins = '';
@@ -123,6 +126,11 @@ router.get('/:id', async (req, res) => {
         if (hasVisaTypesTable && cols.includes('visa_type_id')) {
             joins += ' LEFT JOIN visa_types v ON p.visa_type_id = v.visa_type_id';
             selectFields += ', v.name as visa_type_name';
+        }
+
+        if (hasEmployeesTable && cols.includes('project_manager_id')) {
+            joins += ' LEFT JOIN employees e ON p.project_manager_id = e.id';
+            selectFields += ', e.full_name as project_manager_name, e.work_email as project_manager_email';
         }
 
         const projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.${idCol} = $1`;
@@ -220,6 +228,7 @@ router.get('/', async (req, res) => {
         add('start_date');
         add('payment_amount');
         add('created_at');
+        add('project_manager_id');
 
         // Always include lead names when available, but only join if the `leads` table exists
         let joinLead = cols.includes('client_lead_id');
@@ -237,10 +246,30 @@ router.get('/', async (req, res) => {
         }
 
         const leadSelect = joinLead ? 'l.first_name, l.last_name, l.company' : '';
-        const selectList = (selectCols.join(', ') || 'p.project_id as project_id') + (leadSelect ? ', ' + leadSelect : '');
+
+        let joinManager = cols.includes('project_manager_id');
+        if (joinManager) {
+            try {
+                const employeeTable = await db.query("SELECT to_regclass('public.employees') as exists");
+                if (!employeeTable.rows[0] || !employeeTable.rows[0].exists) {
+                    console.warn('Employees table not present; skipping project manager join in projects list');
+                    joinManager = false;
+                }
+            } catch (e) {
+                console.warn('Error checking employees table existence, skipping join:', e && e.message ? e.message : e);
+                joinManager = false;
+            }
+        }
+
+        const managerSelect = joinManager ? 'e.full_name as project_manager_name, e.work_email as project_manager_email' : '';
+        const selectList = (selectCols.join(', ') || 'p.project_id as project_id')
+            + (leadSelect ? ', ' + leadSelect : '')
+            + (managerSelect ? ', ' + managerSelect : '');
+
         const sql = `SELECT ${selectList}
                  FROM projects p
                  ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
+                 ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
                  ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC
                  LIMIT 200`;
 
@@ -258,6 +287,9 @@ router.get('/', async (req, res) => {
             status: r.status || '',
             start_date: r.start_date || null,
             payment_amount: r.payment_amount || null,
+            project_manager_id: r.project_manager_id || null,
+            project_manager_name: r.project_manager_name || '',
+            project_manager_email: r.project_manager_email || '',
             created_at: r.created_at
         }));
         res.json(rows);
@@ -685,7 +717,7 @@ router.post('/create', async (req, res) => {
         const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
         const existingCols = colRes.rows.map(r => r.column_name);
 
-        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','client_id','status','progress','visa_type_id','current_stage','assigned_user_id','assigned_manager_id'];
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','client_id','status','progress','visa_type_id','current_stage','assigned_user_id','assigned_manager_id','project_manager_id'];
         const fields = [];
         const values = [];
 
