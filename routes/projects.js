@@ -449,8 +449,6 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-module.exports = router;
-
 // POST /api/projects/create - lightweight project creation helper
 router.post('/create', async (req, res) => {
     const payload = req.body || {};
@@ -512,3 +510,5 @@ router.post('/create', async (req, res) => {
         res.status(500).json({ error: 'Failed to create project' });
     }
 });
+
+module.exports = router;
