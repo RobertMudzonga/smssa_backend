@@ -403,7 +403,8 @@ router.delete('/:id', async (req, res) => {
         if (checkResult.rows.length === 0) {
             await client.query('ROLLBACK');
             console.log(`Project ${id} not found`);
-            return res.status(404).json({ error: 'Project not found' });
+            // Return 200 OK instead of 404 for bulk operations - treat as already deleted
+            return res.status(200).json({ ok: true, message: 'Project not found or already deleted' });
         }
 
         console.log(`Found project ${id}, proceeding with deletion of related records`);
