@@ -337,7 +337,12 @@ router.delete('/:id', async (req, res) => {
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
-        // Attempt best-effort deletion of related data, then the project row itself.
+        // Determine actual id column used by projects table (project_id or id)
+        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+        const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
+
+        // Attempt best-effort deletion of related data (these usually reference project_id)
         try {
             await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
         } catch (e) {
@@ -349,7 +354,12 @@ router.delete('/:id', async (req, res) => {
             console.warn('Warning deleting document_folders for project', id, e && e.message ? e.message : e);
         }
 
-        const result = await client.query('DELETE FROM projects WHERE project_id = $1 RETURNING *', [id]);
+        if (!idCol) {
+            throw new Error('Unable to determine projects id column (expected project_id or id)');
+        }
+
+        const deleteQuery = `DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`;
+        const result = await client.query(deleteQuery, [id]);
         await client.query('COMMIT');
         if (result.rows.length === 0) return res.status(404).json({ error: 'Project not found' });
         res.json({ ok: true, deleted: result.rows[0] });
