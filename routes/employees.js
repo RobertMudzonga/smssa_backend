@@ -7,7 +7,27 @@ router.get('/', async (req, res) => {
   try {
     const q = `SELECT id, full_name, work_email, job_position, department, manager_id, is_active, created_at FROM employees ORDER BY full_name`;
     const { rows } = await db.query(q);
-    res.json(rows);
+    
+    // Fetch metrics for each employee (projects and conversions)
+    const employeesWithMetrics = await Promise.all(rows.map(async (emp) => {
+      // Count projects where employee is project manager
+      const projectsQuery = `SELECT COUNT(*) as count FROM projects WHERE project_manager_id = $1`;
+      const projectsResult = await db.query(projectsQuery, [emp.id]).catch(() => ({ rows: [{ count: '0' }] }));
+      const projects_count = parseInt(projectsResult.rows[0]?.count || '0');
+      
+      // Count prospects converted (stage 13 = won/converted)
+      const conversionsQuery = `SELECT COUNT(*) as count FROM prospects WHERE assigned_to = $1 AND stage_id = 13`;
+      const conversionsResult = await db.query(conversionsQuery, [emp.work_email]).catch(() => ({ rows: [{ count: '0' }] }));
+      const conversions_count = parseInt(conversionsResult.rows[0]?.count || '0');
+      
+      return {
+        ...emp,
+        projects_count,
+        conversions_count
+      };
+    }));
+    
+    res.json(employeesWithMetrics);
   } catch (err) {
     console.error('Error fetching employees', err);
     res.status(500).json({ error: 'Failed to fetch employees' });
