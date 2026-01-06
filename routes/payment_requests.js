@@ -10,27 +10,22 @@ router.get('/', async (req, res) => {
     const result = await db.query(`
       SELECT 
         pr.payment_request_id,
-        pr.requested_by,
-        pr.requester_id,
         pr.amount,
         pr.description,
         pr.due_date,
         pr.is_urgent,
         pr.status,
-        pr.approved_by,
         pr.approved_at,
-        pr.paid_by,
         pr.paid_at,
         pr.rejection_reason,
         pr.created_at,
         pr.updated_at,
-        COALESCE(e.full_name, 'Unknown') AS requester_name,
-        COALESCE(ua.first_name,'') || ' ' || COALESCE(ua.last_name,'') AS approved_by_name,
-        COALESCE(up.first_name,'') || ' ' || COALESCE(up.last_name,'')  AS paid_by_name
+        pr.requester_id,
+        pr.approved_by,
+        pr.paid_by,
+        COALESCE(e.full_name, 'Unknown') AS requester_name
       FROM payment_requests pr
       LEFT JOIN employees e ON pr.requester_id = e.id
-      LEFT JOIN users ua ON pr.approved_by = ua.id
-      LEFT JOIN users up ON pr.paid_by = up.id
       ORDER BY 
         CASE WHEN pr.is_urgent THEN 0 ELSE 1 END,
         pr.due_date ASC,
@@ -46,9 +41,9 @@ router.get('/', async (req, res) => {
 
 // POST /api/payment-requests - create a payment request
 router.post('/', async (req, res) => {
-  const { amount, description, due_date, is_urgent = false, requested_by, requester_id } = req.body;
+  const { amount, description, due_date, is_urgent = false, requester_id } = req.body;
 
-  console.log('Creating payment request:', { amount, description, due_date, is_urgent, requested_by, requester_id });
+  console.log('Creating payment request:', { amount, description, due_date, is_urgent, requester_id });
 
   if (!amount || !description || !due_date || !requester_id) {
     return res.status(400).json({ error: 'Missing required fields: amount, description, due_date, requester_id' });
@@ -56,10 +51,10 @@ router.post('/', async (req, res) => {
 
   try {
     const result = await db.query(
-      `INSERT INTO payment_requests (requested_by, requester_id, amount, description, due_date, is_urgent, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `INSERT INTO payment_requests (requester_id, amount, description, due_date, is_urgent, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        RETURNING *`,
-      [requested_by, requester_id, amount, description, due_date, is_urgent]
+      [requester_id, amount, description, due_date, is_urgent]
     );
     console.log('Payment request created:', result.rows[0]);
     res.status(201).json(result.rows[0]);

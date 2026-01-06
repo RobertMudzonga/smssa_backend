@@ -51,7 +51,16 @@ EXCEPTION WHEN undefined_column THEN
   NULL;
 END $$;
 
--- Step 5: Create index on requester_id for performance
+-- Step 5: Drop the requested_by column if it exists (using requester_id instead)
+DO $$
+BEGIN
+  ALTER TABLE payment_requests DROP COLUMN requested_by;
+EXCEPTION WHEN undefined_column THEN
+  -- Column doesn't exist, do nothing
+  NULL;
+END $$;
+
+-- Step 6: Create index on requester_id for performance
 CREATE INDEX IF NOT EXISTS idx_payment_requests_requester_id ON payment_requests(requester_id);
 
 COMMIT;
