@@ -9,8 +9,22 @@ router.get('/', async (req, res) => {
   try {
     const result = await db.query(`
       SELECT 
-        pr.*,
-        e.full_name AS requester_name,
+        pr.payment_request_id,
+        pr.requested_by,
+        pr.requester_id,
+        pr.amount,
+        pr.description,
+        pr.due_date,
+        pr.is_urgent,
+        pr.status,
+        pr.approved_by,
+        pr.approved_at,
+        pr.paid_by,
+        pr.paid_at,
+        pr.rejection_reason,
+        pr.created_at,
+        pr.updated_at,
+        COALESCE(e.full_name, 'Unknown') AS requester_name,
         COALESCE(ua.first_name,'') || ' ' || COALESCE(ua.last_name,'') AS approved_by_name,
         COALESCE(up.first_name,'') || ' ' || COALESCE(up.last_name,'')  AS paid_by_name
       FROM payment_requests pr
