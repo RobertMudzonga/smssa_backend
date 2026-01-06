@@ -15,8 +15,8 @@ router.get('/', async (req, res) => {
         COALESCE(up.first_name,'') || ' ' || COALESCE(up.last_name,'')  AS paid_by_name
       FROM payment_requests pr
       LEFT JOIN employees e ON pr.requester_id = e.id
-      LEFT JOIN users ua ON pr.approved_by = ua.user_id
-      LEFT JOIN users up ON pr.paid_by = up.user_id
+      LEFT JOIN users ua ON pr.approved_by = ua.id
+      LEFT JOIN users up ON pr.paid_by = up.id
       ORDER BY 
         CASE WHEN pr.is_urgent THEN 0 ELSE 1 END,
         pr.due_date ASC,
