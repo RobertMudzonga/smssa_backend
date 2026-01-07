@@ -6,18 +6,34 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 // --- 1. GET ALL LEADS (List/Kanban View) ---
 router.get('/', async (req, res) => {
     try {
-        const result = await db.query(`
-            SELECT 
-                l.*, 
-                ps.name as stage_name, 
-                u.first_name as assigned_to_name,
-                u.last_name as assigned_to_last_name
-            FROM leads l
-            LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
-            LEFT JOIN users u ON l.assigned_user_id = u.id
-            WHERE l.converted IS NOT TRUE OR l.converted IS NULL
-            ORDER BY l.updated_at DESC
-        `);
+        // First check if prospect_stages table exists
+        const psExists = await db.query("SELECT to_regclass('public.prospect_stages') as exists");
+        const hasProspectStages = psExists.rows[0] && psExists.rows[0].exists;
+
+        let result;
+        if (hasProspectStages) {
+            // Use full query with joins if tables exist
+            result = await db.query(`
+                SELECT 
+                    l.*, 
+                    ps.name as stage_name, 
+                    u.first_name as assigned_to_name,
+                    u.last_name as assigned_to_last_name
+                FROM leads l
+                LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
+                LEFT JOIN users u ON l.assigned_user_id = u.id
+                WHERE l.converted IS NOT TRUE OR l.converted IS NULL
+                ORDER BY l.updated_at DESC
+            `);
+        } else {
+            // Fallback: simple query without joins
+            result = await db.query(`
+                SELECT l.*
+                FROM leads l
+                WHERE l.converted IS NOT TRUE OR l.converted IS NULL
+                ORDER BY l.updated_at DESC
+            `);
+        }
         
         // Use cold_lead_stage if it exists, otherwise default to 101 (First Contact)
         const transformedLeads = result.rows.map(lead => ({
