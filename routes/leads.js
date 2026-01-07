@@ -6,7 +6,14 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 // --- 1. GET ALL LEADS (List/Kanban View) ---
 router.get('/', async (req, res) => {
     try {
-        // First check if prospect_stages table exists
+        // First check if leads table exists
+        const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
+        if (!leadsExists.rows[0] || !leadsExists.rows[0].exists) {
+            console.warn('leads table not found - returning empty array');
+            return res.json([]);
+        }
+
+        // Check if prospect_stages table exists
         const psExists = await db.query("SELECT to_regclass('public.prospect_stages') as exists");
         const hasProspectStages = psExists.rows[0] && psExists.rows[0].exists;
 
