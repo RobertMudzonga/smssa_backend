@@ -185,6 +185,49 @@ router.get('/:id', async (req, res) => {
     }
 });
 
+// --- 2a. UPDATE PROJECT DETAILS ---
+// Allows editing general project fields (internal use only)
+router.patch('/:id', async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body || {};
+
+    // Internal-only: require company email domain
+    try {
+        const email = String(req.headers['x-user-email'] || '').toLowerCase();
+        if (!email.endsWith('@immigrationspecialists.co.za')) {
+            return res.status(403).json({ error: 'Forbidden: internal access only' });
+        }
+    } catch {}
+
+    try {
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+
+        // Allowed editable fields
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id'];
+        const parts = [];
+        const values = [];
+        let i = 1;
+        for (const key of allowed) {
+            if (typeof updates[key] === 'undefined') continue;
+            if (!existingCols.includes(key)) continue;
+            parts.push(`${key} = $${i}`);
+            values.push(updates[key]);
+            i++;
+        }
+        if (parts.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+
+        values.push(id);
+        const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
+        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE project_id = $${i} RETURNING *`;
+        const result = await db.query(q, values);
+        return res.json(result.rows[0] || {});
+    } catch (err) {
+        console.error('Project details update failed:', err);
+        return res.status(500).json({ error: 'Update failed' });
+    }
+});
+
 // GET project by lead id (helpful to find project created for a client/lead)
 router.get('/by-lead/:leadId', async (req, res) => {
     try {
@@ -771,3 +814,37 @@ router.post('/create', async (req, res) => {
 });
 
 module.exports = router;
+
+// --- 7. PROJECT REVIEWS (INTERNAL) ---
+// List reviews for a project
+router.get('/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const r = await db.query('SELECT * FROM project_reviews WHERE project_id = $1 ORDER BY created_at DESC', [id]);
+        return res.json({ ok: true, reviews: r.rows });
+    } catch (err) {
+        console.error('Fetch project reviews failed:', err);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// Add a review (internal-only)
+router.post('/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    const { health_status, comment } = req.body || {};
+    const email = String(req.headers['x-user-email'] || '').toLowerCase();
+
+    if (!email.endsWith('@immigrationspecialists.co.za')) {
+        return res.status(403).json({ error: 'Forbidden: internal access only' });
+    }
+    try {
+        const ins = await db.query(
+            'INSERT INTO project_reviews (project_id, reviewer_email, health_status, comment) VALUES ($1, $2, $3, $4) RETURNING *',
+            [id, email, health_status || null, comment || null]
+        );
+        return res.status(201).json({ ok: true, review: ins.rows[0] });
+    } catch (err) {
+        console.error('Create project review failed:', err);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
