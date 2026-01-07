@@ -2,10 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 
-// --- 1. CREATE PROJECT (Converts Lead to Project with Auto-Checklist) ---
-// This is called when a lead in Stage 13 ('Won') is converted.
+// --- 1. CREATE PROJECT ---
+// Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
 router.post('/', async (req, res) => {
-    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id } = req.body;
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_name, client_name, client_email, case_type, priority, start_date, payment_amount } = req.body;
     
     // Start transaction
     const client = await db.pool.connect();
@@ -13,16 +13,15 @@ router.post('/', async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        // If the projects table doesn't exist, avoid throwing a 500 — echo back for UI continuity.
+        // Check if projects table exists
         const existsCheck = await client.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='projects') as exists");
         if (!existsCheck.rows[0] || !existsCheck.rows[0].exists) {
             console.warn('projects table not found during create - returning echo response');
             await client.query('ROLLBACK');
-            return res.status(201).json({ ok: true, created: { client_lead_id, visa_type_id, assigned_user_id } });
+            return res.status(201).json({ ok: true, created: { project_name, client_name } });
         }
 
-        // A. Create the Project Entry (Starts at Stage 1 of the 6-stage Production Pipeline)
-        // Adapt to different schemas by checking which columns exist.
+        // Get available columns to build flexible insert
         const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
         const cols = colRes.rows.map(r => r.column_name);
         const insertCols = [];
@@ -30,66 +29,139 @@ router.post('/', async (req, res) => {
         const placeholders = [];
         let idx = 1;
 
-        if (cols.includes('client_lead_id')) { insertCols.push('client_lead_id'); values.push(client_lead_id); placeholders.push(`$${idx++}`); }
-        else if (cols.includes('lead_id')) { insertCols.push('lead_id'); values.push(client_lead_id); placeholders.push(`$${idx++}`); }
+        // Add fields that exist in the table
+        if (cols.includes('client_lead_id') && client_lead_id) { 
+            insertCols.push('client_lead_id'); 
+            values.push(client_lead_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+        
+        if (cols.includes('visa_type_id') && visa_type_id) { 
+            insertCols.push('visa_type_id'); 
+            values.push(visa_type_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+        
+        if (cols.includes('assigned_user_id') && assigned_user_id) { 
+            insertCols.push('assigned_user_id'); 
+            values.push(assigned_user_id); 
+            placeholders.push(`$${idx++}`); 
+        }
 
-        if (cols.includes('visa_type_id')) { insertCols.push('visa_type_id'); values.push(visa_type_id); placeholders.push(`$${idx++}`); }
-        if (cols.includes('assigned_user_id')) { insertCols.push('assigned_user_id'); values.push(assigned_user_id); placeholders.push(`$${idx++}`); }
-        if (cols.includes('current_stage')) { insertCols.push('current_stage'); values.push(1); placeholders.push(`$${idx++}`); }
-        // default projects should be active unless otherwise specified
-        if (cols.includes('status')) { insertCols.push('status'); values.push('Active'); placeholders.push(`$${idx++}`); }
-        if (cols.includes('project_manager_id')) { insertCols.push('project_manager_id'); values.push(project_manager_id || null); placeholders.push(`$${idx++}`); }
+        if (cols.includes('project_name') && project_name) { 
+            insertCols.push('project_name'); 
+            values.push(project_name); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('client_name') && client_name) { 
+            insertCols.push('client_name'); 
+            values.push(client_name); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('client_email') && client_email) { 
+            insertCols.push('client_email'); 
+            values.push(client_email); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('case_type') && case_type) { 
+            insertCols.push('case_type'); 
+            values.push(case_type); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('priority') && priority) { 
+            insertCols.push('priority'); 
+            values.push(priority); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('start_date') && start_date) { 
+            insertCols.push('start_date'); 
+            values.push(start_date); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('payment_amount') && payment_amount) { 
+            insertCols.push('payment_amount'); 
+            values.push(payment_amount); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('current_stage')) { 
+            insertCols.push('current_stage'); 
+            values.push(1); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('status')) { 
+            insertCols.push('status'); 
+            values.push('Active'); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('project_manager_id') && project_manager_id) { 
+            insertCols.push('project_manager_id'); 
+            values.push(project_manager_id); 
+            placeholders.push(`$${idx++}`); 
+        }
 
         if (insertCols.length === 0) {
-            throw new Error('No known insertable columns found in projects table');
+            throw new Error('No fields to insert - table schema mismatch');
         }
 
         const returnCol = cols.includes('project_id') ? 'project_id' : (cols.includes('id') ? 'id' : 'project_id');
-        const q = `INSERT INTO projects (${insertCols.join(',')}) VALUES (${placeholders.join(',')}) RETURNING ${returnCol}`;
+        const q = `INSERT INTO projects (${insertCols.join(',')}) VALUES (${placeholders.join(',')}) RETURNING ${returnCol}, *`;
         const projectRes = await client.query(q, values);
-        const projectId = projectRes.rows[0][returnCol];
+        const createdProject = projectRes.rows[0];
+        const projectId = createdProject[returnCol];
 
-        // B. Fetch the Template Requirements for this Visa Type
-        const templateRes = await client.query(
-            `SELECT document_id FROM visa_document_checklist WHERE visa_type_id = $1`,
-            [visa_type_id]
-        );
+        // Only fetch and create checklist if visa_type_id is provided (lead conversion flow)
+        if (visa_type_id) {
+            try {
+                const templateRes = await client.query(
+                    `SELECT document_id FROM visa_document_checklist WHERE visa_type_id = $1`,
+                    [visa_type_id]
+                );
 
-        // C. Bulk Insert these requirements into project_documents (Client's specific checklist)
-        for (let row of templateRes.rows) {
-            await client.query(
-                `INSERT INTO project_documents (project_id, document_id, status) VALUES ($1, $2, 'Pending')`,
-                [projectId, row.document_id]
-            );
+                for (let row of templateRes.rows) {
+                    await client.query(
+                        `INSERT INTO project_documents (project_id, document_id, status) VALUES ($1, $2, 'Pending')`,
+                        [projectId, row.document_id]
+                    );
+                }
+            } catch (checklistErr) {
+                console.warn('Checklist creation failed (non-fatal):', checklistErr.message);
+            }
         }
 
-                // D. Create a document folder for this project (use lead/company name where possible)
-                try {
-                    // Determine folder name: prefer name from request body, then company from lead, else fallback
-                    let folderName = req.body.project_name || null;
-                    if (!folderName && client_lead_id) {
-                        const leadRes = await client.query('SELECT company, first_name, last_name FROM leads WHERE lead_id = $1', [client_lead_id]);
-                        if (leadRes.rows.length > 0) {
-                            const lead = leadRes.rows[0];
-                            folderName = lead.company || `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || null;
-                        }
-                    }
-                    if (!folderName) folderName = `project-${projectId}`;
-
-                    await client.query('INSERT INTO document_folders (project_id, name) VALUES ($1, $2)', [projectId, folderName]);
-                } catch (folderErr) {
-                    console.error('Error creating document folder during project creation:', folderErr);
-                    // non-fatal; continue
+        // Create a document folder for this project
+        try {
+            let folderName = project_name || client_name || null;
+            if (!folderName && client_lead_id) {
+                const leadRes = await client.query('SELECT company, first_name, last_name FROM leads WHERE lead_id = $1', [client_lead_id]);
+                if (leadRes.rows.length > 0) {
+                    const lead = leadRes.rows[0];
+                    folderName = lead.company || `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || null;
                 }
+            }
+            if (!folderName) folderName = `project-${projectId}`;
 
-                // D. Optionally, set the Lead status to 'Converted' or similar in the leads table (Not strictly required as stage 13 means 'Won')
-                await client.query('COMMIT');
-                res.status(201).json({ message: "Project created and checklist generated", projectId });
+            await client.query('INSERT INTO document_folders (project_id, name) VALUES ($1, $2)', [projectId, folderName]);
+        } catch (folderErr) {
+            console.error('Error creating document folder during project creation:', folderErr);
+            // non-fatal; continue
+        }
+
+        await client.query('COMMIT');
+        res.status(201).json({ message: "Project created successfully", projectId, project: createdProject });
 
     } catch (err) {
-        await client.query('ROLLBACK');
+        await client.query('ROLLBACK').catch(() => null);
         console.error("Project Creation Error:", err);
-        res.status(500).json({ error: "Failed to create project" });
+        res.status(500).json({ error: "Failed to create project", detail: err.message });
     } finally {
         client.release();
     }
