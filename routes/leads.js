@@ -24,8 +24,7 @@ router.get('/', async (req, res) => {
                 SELECT 
                     l.*, 
                     ps.name as stage_name, 
-                    u.first_name as assigned_to_name,
-                    u.last_name as assigned_to_last_name
+                    u.full_name as assigned_to_name
                 FROM leads l
                 LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
                 LEFT JOIN users u ON l.assigned_user_id = u.id
