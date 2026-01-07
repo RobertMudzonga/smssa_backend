@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
                 u.last_name as assigned_to_last_name
             FROM leads l
             LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
-            LEFT JOIN users u ON l.assigned_user_id = u.user_id
+            LEFT JOIN users u ON l.assigned_user_id = u.id
             WHERE l.converted IS NOT TRUE OR l.converted IS NULL
             ORDER BY l.updated_at DESC
         `);
