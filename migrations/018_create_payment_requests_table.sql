@@ -20,5 +20,14 @@ CREATE TABLE IF NOT EXISTS payment_requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_payment_requests_status ON payment_requests(status);
-CREATE INDEX IF NOT EXISTS idx_payment_requests_requested_by ON payment_requests(requested_by);
+-- Create index on requested_by only if the column exists (handles environments where it was removed)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = 'payment_requests' AND column_name = 'requested_by'
+    ) THEN
+        CREATE INDEX IF NOT EXISTS idx_payment_requests_requested_by ON payment_requests(requested_by);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_payment_requests_due_date ON payment_requests(due_date);
