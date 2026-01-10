@@ -38,7 +38,14 @@ CREATE INDEX IF NOT EXISTS idx_leads_email ON leads(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_leads_phone ON leads(phone);
 CREATE INDEX IF NOT EXISTS idx_leads_cold_lead_stage ON leads(cold_lead_stage);
 CREATE INDEX IF NOT EXISTS idx_leads_converted ON leads(converted);
-CREATE INDEX IF NOT EXISTS idx_leads_assigned_user ON leads(assigned_user_id);
+-- Create index on assigned_user_id only if column exists
+DO $$ 
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns 
+               WHERE table_name = 'leads' AND column_name = 'assigned_user_id') THEN
+        CREATE INDEX IF NOT EXISTS idx_leads_assigned_user ON leads(assigned_user_id);
+    END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_leads_updated_at ON leads(updated_at DESC);
 
 -- Add unique constraint on email where not null

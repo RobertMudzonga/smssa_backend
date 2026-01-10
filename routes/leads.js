@@ -24,10 +24,10 @@ router.get('/', async (req, res) => {
                 SELECT 
                     l.*, 
                     ps.name as stage_name, 
-                    u.full_name as assigned_to_name
+                    e.full_name as assigned_to_name
                 FROM leads l
                 LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
-                LEFT JOIN users u ON l.assigned_user_id = u.id
+                LEFT JOIN employees e ON l.assigned_employee_id = e.id
                 WHERE l.converted IS NOT TRUE OR l.converted IS NULL
                 ORDER BY l.updated_at DESC
             `);
@@ -102,7 +102,74 @@ router.patch('/:id/stage', async (req, res) => {
     }
 });
 
-// --- 3. ADD COMMENT TO LEAD ---
+// --- 3. ASSIGN LEAD TO EMPLOYEE (Salesperson) ---
+router.patch('/:id/assign', async (req, res) => {
+    const { id } = req.params;
+    const { employee_id } = req.body;
+
+    if (!employee_id) {
+        return res.status(400).json({ error: 'employee_id is required' });
+    }
+
+    try {
+        // Get the lead details
+        const leadResult = await db.query(
+            'SELECT * FROM leads WHERE lead_id = $1',
+            [id]
+        );
+
+        if (leadResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Lead not found' });
+        }
+
+        const lead = leadResult.rows[0];
+
+        // Get employee details
+        const employeeResult = await db.query(
+            'SELECT id, full_name, work_email FROM employees WHERE id = $1',
+            [employee_id]
+        );
+
+        if (employeeResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Employee not found' });
+        }
+
+        const employee = employeeResult.rows[0];
+
+        // Update lead with assignment
+        const updateResult = await db.query(
+            `UPDATE leads 
+            SET assigned_employee_id = $1, assigned_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
+            WHERE lead_id = $2 
+            RETURNING *`,
+            [employee_id, id]
+        );
+
+        // Create notification for the assigned employee
+        const leadName = `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || lead.email || 'Unknown Lead';
+        const notificationTitle = 'New Lead Assigned';
+        const notificationMessage = `You have been assigned a new lead: ${leadName} from ${lead.company || 'Unknown Company'}`;
+
+        await db.query(
+            `INSERT INTO notifications (
+                employee_id, type, title, message, 
+                related_entity_type, related_entity_id, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+            [employee_id, 'lead_assigned', notificationTitle, notificationMessage, 'lead', id]
+        );
+
+        res.json({
+            message: 'Lead assigned successfully',
+            lead: updateResult.rows[0],
+            assigned_to: employee.full_name
+        });
+    } catch (err) {
+        console.error('Error assigning lead:', err);
+        res.status(500).json({ error: 'Failed to assign lead', detail: err.message });
+    }
+});
+
+// --- 4. ADD COMMENT TO LEAD ---
 router.patch('/:id/comment', async (req, res) => {
     const { id } = req.params;
     const { comment } = req.body;
@@ -132,7 +199,7 @@ router.patch('/:id/comment', async (req, res) => {
     }
 });
 
-// --- 4. MARK LEAD AS LOST ---
+// --- 5. MARK LEAD AS LOST ---
 router.patch('/:id/lost', async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
@@ -162,7 +229,7 @@ router.patch('/:id/lost', async (req, res) => {
     }
 });
 
-// --- 5. DELETE LEAD (for duplicates) ---
+// --- 6. DELETE LEAD (for duplicates) ---
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -180,7 +247,7 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// --- 6. ZAPIER / WEBHOOK ENDPOINT (Lead Ingestion) ---
+// --- 7. ZAPIER / WEBHOOK ENDPOINT (Lead Ingestion) ---
 // Public endpoint for POST requests from Zapier and other form providers
 // Endpoint: POST /api/leads/webhook
 router.post('/webhook', async (req, res) => {
@@ -268,7 +335,7 @@ router.post('/webhook', async (req, res) => {
 
 module.exports = router;
 
-// --- 7. CONVERT LEAD TO PROSPECT ---
+// --- 8. CONVERT LEAD TO PROSPECT ---
 // Endpoint: POST /api/leads/:id/convert
 // Creates a new prospect record based on an existing lead.
 router.post('/:id/convert', async (req, res) => {
