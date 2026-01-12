@@ -476,6 +476,7 @@ router.patch('/:id/stage', async (req, res) => {
                 if (stageVal === 1) statusVal = 'Active';
                 else if (stageVal >= 2 && stageVal <= 5) statusVal = 'In Progress';
                 else if (stageVal === 6) statusVal = 'Completed';
+                else if (stageVal === 7) statusVal = 'On Hold';
                 queryParts.push(`status = $${counter}`);
                 values.push(statusVal);
                 counter++;
