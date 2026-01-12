@@ -48,6 +48,7 @@ const clientPortalRouter = require('./routes/client_portal');
 const debugRouter = require('./routes/debug');
 const paymentRequestsRouter = require('./routes/payment_requests');
 const notificationsRouter = require('./routes/notifications');
+const leaveRequestsRouter = require('./routes/leave_requests');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -68,6 +69,7 @@ app.use('/api/client-portal', clientPortalRouter);
 app.use('/api/debug', debugRouter);
 app.use('/api/payment-requests', paymentRequestsRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/leave-requests', leaveRequestsRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
