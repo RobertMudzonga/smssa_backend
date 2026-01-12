@@ -115,6 +115,7 @@ router.get('/', async (req, res) => {
         ps.name as stage_name
       FROM prospects p
       LEFT JOIN prospect_stages ps ON p.current_stage_id = ps.stage_id
+      WHERE p.is_archived = FALSE OR p.is_archived IS NULL
       ORDER BY p.created_at DESC
     `);
     console.log(`Query successful, found ${result.rows.length} rows`);
@@ -245,7 +246,7 @@ router.post('/', async (req, res) => {
     const { id } = req.params;
     const allowed = [
       'first_name','last_name','email','phone','company','source','deal_name',
-      'assigned_to','quote_sent_date','quote_amount','professional_fees','deposit_amount','expected_closing_date','notes'
+      'assigned_to','quote_sent_date','quote_amount','professional_fees','deposit_amount','expected_closing_date','expected_payment_date','forecast_amount','forecast_probability','notes'
     ];
 
     const updates = [];
@@ -253,8 +254,19 @@ router.post('/', async (req, res) => {
     let i = 1;
     for (const key of allowed) {
       if (req.body[key] !== undefined) {
-        updates.push(`${key} = $${i}`);
-        values.push(req.body[key]);
+        // Special handling for numeric fields
+        if (['quote_amount','professional_fees','deposit_amount','forecast_amount'].includes(key)) {
+          const numVal = req.body[key] !== null ? parseFloat(req.body[key]) : null;
+          updates.push(`${key} = $${i}`);
+          values.push(isNaN(numVal) ? null : numVal);
+        } else if (['forecast_probability','assigned_to'].includes(key)) {
+          const numVal = req.body[key] !== null ? parseInt(req.body[key]) : null;
+          updates.push(`${key} = $${i}`);
+          values.push(isNaN(numVal) ? null : numVal);
+        } else {
+          updates.push(`${key} = $${i}`);
+          values.push(req.body[key]);
+        }
         i++;
       }
     }
@@ -266,6 +278,8 @@ router.post('/', async (req, res) => {
     try {
       const sql = `UPDATE prospects SET ${updates.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $${i} RETURNING *`;
       values.push(id);
+      console.log('Executing update query:', sql);
+      console.log('With values:', values);
       const result = await db.query(sql, values);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
 
@@ -296,8 +310,8 @@ router.post('/', async (req, res) => {
       if (pRes.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
       const existing = pRes.rows[0].notes || '';
       const newNotes = `${existing}\n[${new Date().toISOString()}] MARKED AS LOST: ${reason}`;
-      const result = await db.query('UPDATE prospects SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $3 RETURNING *', ['lost', newNotes, id]);
-      res.json({ message: 'Prospect marked as lost', prospect: result.rows[0] });
+      const result = await db.query('UPDATE prospects SET status = $1, notes = $2, is_archived = $3, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $4 RETURNING *', ['lost', newNotes, true, id]);
+      res.json({ message: 'Prospect marked as lost and archived', prospect: result.rows[0] });
     } catch (err) {
       console.error('Error marking prospect lost:', err);
       res.status(500).json({ error: 'Failed to mark prospect lost', detail: err.message });
