@@ -1,0 +1,5 @@
+﻿Test Document for SMSSA
+This is a test document for the document management system.
+Project: Client ABC
+Folder: Contracts
+Type: Test Document

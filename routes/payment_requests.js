@@ -50,6 +50,13 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // Get requester name for notification
+    const requesterResult = await db.query(
+      `SELECT full_name FROM employees WHERE id = $1`,
+      [requester_id]
+    );
+    const requesterName = requesterResult.rows[0]?.full_name || 'Unknown Employee';
+
     const result = await db.query(
       `INSERT INTO payment_requests (requester_id, amount, description, due_date, is_urgent, status, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -57,6 +64,29 @@ router.post('/', async (req, res) => {
       [requester_id, amount, description, due_date, is_urgent]
     );
     console.log('Payment request created:', result.rows[0]);
+
+    // Notify Prisca (accountant, id=12) about the new payment request
+    try {
+      const urgencyLabel = is_urgent ? 'URGENT ' : '';
+      await db.query(
+        `INSERT INTO notifications (
+          employee_id, type, title, message, 
+          related_entity_type, related_entity_id, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+        [
+          12, // Prisca Sibanda (accountant)
+          'payment_request',
+          `New ${urgencyLabel}Payment Request from ${requesterName}`,
+          `A payment request for ZWL ${amount} has been submitted. Description: ${description}. Due: ${due_date}`,
+          'payment_request',
+          result.rows[0].payment_request_id
+        ]
+      );
+    } catch (notifErr) {
+      console.error('Error creating payment request notification:', notifErr);
+      // Don't fail the request if notification fails
+    }
+
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error('Error creating payment request:', err);
@@ -74,6 +104,21 @@ router.patch('/:id/approve', async (req, res) => {
   }
 
   try {
+    // First get the payment request details
+    const paymentRequestResult = await db.query(
+      `SELECT pr.*, e.full_name as requester_name 
+       FROM payment_requests pr
+       LEFT JOIN employees e ON pr.requester_id = e.id
+       WHERE pr.payment_request_id = $1`,
+      [id]
+    );
+
+    if (paymentRequestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Payment request not found' });
+    }
+
+    const paymentRequest = paymentRequestResult.rows[0];
+
     const result = await db.query(
       `UPDATE payment_requests 
        SET status = 'approved', approved_by = $1, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
@@ -84,6 +129,28 @@ router.patch('/:id/approve', async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Payment request not found or already processed' });
+    }
+
+    // Notify the requester that their payment request was approved
+    try {
+      if (paymentRequest.requester_id) {
+        await db.query(
+          `INSERT INTO notifications (
+            employee_id, type, title, message, 
+            related_entity_type, related_entity_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+          [
+            paymentRequest.requester_id,
+            'payment_request',
+            'Payment Request Approved',
+            `Your payment request for ZWL ${paymentRequest.amount} has been approved and is ready for processing.`,
+            'payment_request',
+            id
+          ]
+        );
+      }
+    } catch (notifErr) {
+      console.error('Error creating approval notification:', notifErr);
     }
 
     res.json(result.rows[0]);
@@ -103,6 +170,21 @@ router.patch('/:id/reject', async (req, res) => {
   }
 
   try {
+    // First get the payment request details
+    const paymentRequestResult = await db.query(
+      `SELECT pr.*, e.full_name as requester_name 
+       FROM payment_requests pr
+       LEFT JOIN employees e ON pr.requester_id = e.id
+       WHERE pr.payment_request_id = $1`,
+      [id]
+    );
+
+    if (paymentRequestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Payment request not found' });
+    }
+
+    const paymentRequest = paymentRequestResult.rows[0];
+
     const result = await db.query(
       `UPDATE payment_requests 
        SET status = 'rejected', approved_by = $1, approved_at = CURRENT_TIMESTAMP, rejection_reason = $2, updated_at = CURRENT_TIMESTAMP 
@@ -113,6 +195,29 @@ router.patch('/:id/reject', async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Payment request not found or already processed' });
+    }
+
+    // Notify the requester that their payment request was rejected
+    try {
+      if (paymentRequest.requester_id) {
+        const reasonText = rejection_reason ? `Reason: ${rejection_reason}` : '';
+        await db.query(
+          `INSERT INTO notifications (
+            employee_id, type, title, message, 
+            related_entity_type, related_entity_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+          [
+            paymentRequest.requester_id,
+            'payment_request',
+            'Payment Request Rejected',
+            `Your payment request for ZWL ${paymentRequest.amount} has been rejected. ${reasonText}`,
+            'payment_request',
+            id
+          ]
+        );
+      }
+    } catch (notifErr) {
+      console.error('Error creating rejection notification:', notifErr);
     }
 
     res.json(result.rows[0]);

@@ -171,12 +171,11 @@ router.post('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        console.log(`Fetching project details for id: ${id}`);
+        console.log(`Fetching project details for name: ${id}`);
 
         // Check which columns exist in projects table
         const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
         const cols = colRes.rows.map(r => r.column_name);
-        const idCol = cols.includes('project_id') ? 'project_id' : (cols.includes('id') ? 'id' : 'project_id');
 
         // Check if related tables exist
         const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
@@ -205,10 +204,16 @@ router.get('/:id', async (req, res) => {
             selectFields += ', e.full_name as project_manager_name, e.work_email as project_manager_email';
         }
 
-        const projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.${idCol} = $1`;
-        console.log(`Executing query: ${projectQuery}`);
-        
-        const project = await db.query(projectQuery, [id]);
+        // Query by project_name (id parameter could be project name or project_id)
+        // First try to find by project_name, then fall back to project_id if numeric
+        let projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.project_name = $1`;
+        let project = await db.query(projectQuery, [id]);
+
+        // If not found and id is numeric, try project_id
+        if (project.rows.length === 0 && !isNaN(id)) {
+            projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.project_id = $1`;
+            project = await db.query(projectQuery, [parseInt(id)]);
+        }
 
         if (project.rows.length === 0) {
             console.log(`Project ${id} not found`);
@@ -216,6 +221,9 @@ router.get('/:id', async (req, res) => {
         }
 
         console.log(`Found project ${id}, fetching documents`);
+
+        // Get the actual project_id for querying dependent tables
+        const projectId = project.rows[0].project_id;
 
         // Fetch documents if tables exist
         let documents = { rows: [] };
@@ -229,7 +237,7 @@ router.get('/:id', async (req, res) => {
                     LEFT JOIN documents d ON pd.document_id = d.document_id
                     WHERE pd.project_id = $1
                     ORDER BY d.name ASC
-                `, [id]);
+                `, [projectId]);
             }
         } catch (docErr) {
             console.warn('Error fetching documents for project', id, ':', docErr.message || docErr);
@@ -291,7 +299,7 @@ router.patch('/:id', async (req, res) => {
 
         values.push(id);
         const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
-        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE project_id = $${i} RETURNING *`;
+        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE project_name = $${i} RETURNING *`;
         const result = await db.query(q, values);
         return res.json(result.rows[0] || {});
     } catch (err) {
@@ -330,7 +338,6 @@ router.get('/', async (req, res) => {
         // Build a select list that includes useful project fields when available
         const selectCols = [];
         const add = (c, alias) => { if (cols.includes(c)) selectCols.push(`p.${c}${alias ? ` as ${alias}` : ''}`); };
-        add('project_id');
         add('project_name');
         add('client_name');
         add('client_email');
@@ -385,14 +392,14 @@ router.get('/', async (req, res) => {
                  FROM projects p
                  ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
                  ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
-                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_id'} DESC`;
+                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_name'} DESC`;
 
         const result = await db.query(sql);
 
         // Map rows to include sensible fallbacks for the frontend
         const rows = result.rows.map(r => ({
-            project_id: r.project_id,
-            project_name: r.project_name || r.name || r.company || `Project ${r.project_id}`,
+            project_id: r.project_name,
+            project_name: r.project_name || r.name || r.company || 'Unnamed Project',
             client_name: r.client_name || `${r.first_name || ''} ${r.last_name || ''}`.trim() || '',
             client_email: r.client_email || '',
             case_type: r.case_type || '',
@@ -472,9 +479,9 @@ router.patch('/:id/stage', async (req, res) => {
             const hasStatusInParts = queryParts.some(q => q.startsWith('status ='));
             if (!hasStatusInParts) {
                 const stageVal = Number(updates.current_stage) || 0;
-                let statusVal = 'In Progress';
-                if (stageVal === 1) statusVal = 'Active';
-                else if (stageVal >= 2 && stageVal <= 5) statusVal = 'In Progress';
+                let statusVal = 'Submitted';
+                if (stageVal === 1) statusVal = 'New';
+                else if (stageVal >= 2 && stageVal <= 5) statusVal = 'Submitted';
                 else if (stageVal === 6) statusVal = 'Completed';
                 else if (stageVal === 7) statusVal = 'On Hold';
                 queryParts.push(`status = $${counter}`);
@@ -485,10 +492,21 @@ router.patch('/:id/stage', async (req, res) => {
 
         if (queryParts.length === 0) return res.status(400).json({ error: "No valid fields to update" });
 
-        values.push(id);
+        // Support both project_name and numeric project_id
+        let whereClause = 'WHERE project_id = $';
+        const idValue = isNaN(id) ? undefined : parseInt(id);
+        
+        if (isNaN(id) || idValue === NaN) {
+            // It's a project name
+            values.push(id);
+        } else {
+            // It's a numeric ID
+            values.push(idValue);
+        }
+        
         // Only set updated_at if the column exists in this projects table
         const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
-        const query = `UPDATE projects SET ${queryParts.join(', ')}${setUpdatedAt} WHERE project_id = $${counter} RETURNING *`;
+        const query = `UPDATE projects SET ${queryParts.join(', ')}${setUpdatedAt} ${whereClause}${counter} RETURNING *`;
 
         try {
             console.log('Executing project update:', query, values);
@@ -725,20 +743,15 @@ router.delete('/:id', async (req, res) => {
         await client.query('BEGIN');
         console.log(`Attempting to delete project with id: ${id}`);
         
-        // Determine actual id column used by projects table (project_id or id)
-        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
-        const existingCols = colRes.rows.map(r => r.column_name);
-        const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
-
-        console.log(`Project ID column identified as: ${idCol}`);
-
-        if (!idCol) {
-            throw new Error('Unable to determine projects id column (expected project_id or id)');
+        // Check if project exists by name or ID
+        let checkQuery = `SELECT project_id FROM projects WHERE project_name = $1`;
+        let checkResult = await client.query(checkQuery, [id]);
+        
+        // If not found by name and id is numeric, try project_id
+        if (checkResult.rows.length === 0 && !isNaN(id)) {
+            checkQuery = `SELECT project_id FROM projects WHERE project_id = $1`;
+            checkResult = await client.query(checkQuery, [parseInt(id)]);
         }
-
-        // Check if project exists first
-        const checkQuery = `SELECT * FROM projects WHERE ${idCol} = $1`;
-        const checkResult = await client.query(checkQuery, [id]);
         
         if (checkResult.rows.length === 0) {
             await client.query('ROLLBACK');
@@ -747,7 +760,8 @@ router.delete('/:id', async (req, res) => {
             return res.status(200).json({ ok: true, message: 'Project not found or already deleted' });
         }
 
-        console.log(`Found project ${id}, proceeding with deletion of related records`);
+        const projectId = checkResult.rows[0].project_id;
+        console.log(`Found project ${id} with project_id ${projectId}, proceeding with deletion of related records`);
 
         // Check which related tables exist to avoid transaction abort on missing tables
         const tableChecks = await client.query(`
@@ -764,7 +778,7 @@ router.delete('/:id', async (req, res) => {
         
         if (existingTables.has('project_documents')) {
             try {
-                const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [id]);
+                const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [projectId]);
                 console.log(`Deleted ${docResult.rowCount} project_documents for project ${id}`);
             } catch (e) {
                 console.warn('Warning deleting project_documents for project', id, ':', e && e.message ? e.message : e);
@@ -773,7 +787,7 @@ router.delete('/:id', async (req, res) => {
         
         if (existingTables.has('documents')) {
             try {
-                const docsResult = await client.query('DELETE FROM documents WHERE project_id = $1', [id]);
+                const docsResult = await client.query('DELETE FROM documents WHERE project_id = $1', [projectId]);
                 console.log(`Deleted ${docsResult.rowCount} documents for project ${id}`);
             } catch (e) {
                 console.warn('Warning deleting documents for project', id, ':', e && e.message ? e.message : e);
@@ -782,7 +796,7 @@ router.delete('/:id', async (req, res) => {
         
         if (existingTables.has('document_folders')) {
             try {
-                const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [id]);
+                const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [projectId]);
                 console.log(`Deleted ${folderResult.rowCount} document_folders for project ${id}`);
             } catch (e) {
                 console.warn('Warning deleting document_folders for project', id, ':', e && e.message ? e.message : e);
@@ -791,17 +805,17 @@ router.delete('/:id', async (req, res) => {
         
         if (existingTables.has('checklists')) {
             try {
-                const checklistResult = await client.query('DELETE FROM checklists WHERE project_id = $1', [id]);
+                const checklistResult = await client.query('DELETE FROM checklists WHERE project_id = $1', [projectId]);
                 console.log(`Deleted ${checklistResult.rowCount} checklists for project ${id}`);
             } catch (e) {
                 console.warn('Warning deleting checklists for project', id, ':', e && e.message ? e.message : e);
             }
         }
 
-        // Now delete the project itself
-        const deleteQuery = `DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`;
-        console.log(`Executing: ${deleteQuery} with id=${id}`);
-        const result = await client.query(deleteQuery, [id]);
+        // Now delete the project itself - use project_id for deletion
+        const deleteQuery = `DELETE FROM projects WHERE project_id = $1 RETURNING *`;
+        console.log(`Executing: ${deleteQuery} with project_id=${projectId}`);
+        const result = await client.query(deleteQuery, [projectId]);
         
         await client.query('COMMIT');
         console.log(`Successfully deleted project ${id}`);
@@ -893,7 +907,20 @@ module.exports = router;
 router.get('/:id/reviews', async (req, res) => {
     const { id } = req.params;
     try {
-        const r = await db.query('SELECT * FROM project_reviews WHERE project_id = $1 ORDER BY created_at DESC', [id]);
+        // Support both project_name and numeric project_id
+        let query = `SELECT * FROM project_reviews WHERE project_id = $1 ORDER BY created_at DESC`;
+        let params = [parseInt(id)];
+        
+        if (isNaN(id)) {
+            // It's a project name - need to look it up first
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.json({ ok: true, reviews: [] });
+            }
+            params = [projResult.rows[0].project_id];
+        }
+        
+        const r = await db.query(query, params);
         return res.json({ ok: true, reviews: r.rows });
     } catch (err) {
         console.error('Fetch project reviews failed:', err);
@@ -911,10 +938,63 @@ router.post('/:id/reviews', async (req, res) => {
         return res.status(403).json({ error: 'Forbidden: internal access only' });
     }
     try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+        
+        // Get project details to notify project manager
+        const projectResult = await db.query(
+            `SELECT p.*, e.id as manager_id, e.full_name as manager_name 
+             FROM projects p
+             LEFT JOIN employees e ON p.project_manager_id = e.id
+             WHERE p.project_id = $1`,
+            [projectId]
+        );
+
         const ins = await db.query(
             'INSERT INTO project_reviews (project_id, reviewer_email, health_status, comment) VALUES ($1, $2, $3, $4) RETURNING *',
-            [id, email, health_status || null, comment || null]
+            [projectId, email, health_status || null, comment || null]
         );
+
+        // Get reviewer name
+        const reviewerResult = await db.query(
+            'SELECT full_name FROM employees WHERE work_email = $1',
+            [email]
+        );
+        const reviewerName = reviewerResult.rows[0]?.full_name || email;
+
+        // Notify project manager about the review
+        if (projectResult.rows.length > 0) {
+            const project = projectResult.rows[0];
+            if (project.manager_id) {
+                try {
+                    const statusLabel = health_status ? ` (Status: ${health_status})` : '';
+                    await db.query(
+                        `INSERT INTO notifications (
+                          employee_id, type, title, message, 
+                          related_entity_type, related_entity_id, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+                        [
+                            project.manager_id,
+                            'project_review',
+                            `New Review for Project: ${project.project_name}`,
+                            `${reviewerName} has added a review${statusLabel}. Comment: ${comment || 'No additional comments'}`,
+                            'project_review',
+                            ins.rows[0].review_id || id
+                        ]
+                    );
+                } catch (notifErr) {
+                    console.error('Error creating project review notification:', notifErr);
+                }
+            }
+        }
+
         return res.status(201).json({ ok: true, review: ins.rows[0] });
     } catch (err) {
         console.error('Create project review failed:', err);

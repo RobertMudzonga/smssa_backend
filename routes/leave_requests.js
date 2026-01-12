@@ -84,16 +84,18 @@ router.post('/', async (req, res) => {
     // Look up employee by email
     let employeeId = null;
     let employeeName = null;
+    let employeeDepartment = null;
     
     try {
       const employeeResult = await db.query(
-        `SELECT id, full_name FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
+        `SELECT id, full_name, department, manager_id FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
         [createdBy]
       );
       
       if (employeeResult.rows.length > 0) {
         employeeId = employeeResult.rows[0].id;
         employeeName = employeeResult.rows[0].full_name;
+        employeeDepartment = employeeResult.rows[0].department;
       }
     } catch (err) {
       console.warn('Could not look up employee:', err);
@@ -107,7 +109,53 @@ router.post('/', async (req, res) => {
       [employeeId, employeeName || createdBy, leave_type, start_date, end_date, reason || '', createdBy]
     );
     
-    res.status(201).json(result.rows[0]);
+    const leaveRequest = result.rows[0];
+
+    // Create notification for manager and approvers
+    try {
+      // Find managers who need to approve this leave request
+      const managersQuery = `
+        SELECT DISTINCT m.id, m.full_name
+        FROM employees e
+        LEFT JOIN employees m ON e.manager_id = m.id
+        WHERE e.id = $1 OR (e.department = $2 AND (m.role = 'department_manager' OR m.role = 'overall_manager'))
+      `;
+      const managersResult = await db.query(managersQuery, [employeeId, employeeDepartment]);
+      
+      // Also notify overall manager (Munya - id 2)
+      const notificationRecipients = new Set();
+      managersResult.rows.forEach(row => {
+        if (row.id) notificationRecipients.add(row.id);
+      });
+      notificationRecipients.add(2); // Overall manager
+
+      // Create notifications for all approvers
+      for (const recipientId of notificationRecipients) {
+        try {
+          await db.query(
+            `INSERT INTO notifications (
+              employee_id, type, title, message, 
+              related_entity_type, related_entity_id, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+            [
+              recipientId,
+              'leave_request',
+              `New Leave Request from ${employeeName}`,
+              `${employeeName} has requested ${leave_type} leave from ${start_date} to ${end_date}`,
+              'leave_request',
+              leaveRequest.id
+            ]
+          );
+        } catch (notifErr) {
+          console.error('Error creating notification:', notifErr);
+        }
+      }
+    } catch (notifErr) {
+      console.error('Error sending leave request notifications:', notifErr);
+      // Don't fail the request if notification fails
+    }
+    
+    res.status(201).json(leaveRequest);
   } catch (err) {
     console.error('Error creating leave request:', err);
     res.status(500).json({ error: 'Failed to create leave request' });
@@ -125,6 +173,18 @@ router.patch('/:id', async (req, res) => {
       return res.status(400).json({ error: 'Status is required' });
     }
 
+    // First get the leave request to find the employee
+    const leaveRequestResult = await db.query(
+      `SELECT * FROM leave_requests WHERE id = $1`,
+      [id]
+    );
+
+    if (leaveRequestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+
+    const leaveRequest = leaveRequestResult.rows[0];
+
     const result = await db.query(
       `UPDATE leave_requests 
        SET status = $1, approved_by = $2, comments = $3, updated_at = CURRENT_TIMESTAMP
@@ -133,8 +193,36 @@ router.patch('/:id', async (req, res) => {
       [status, approvedBy, comments || '', id]
     );
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Leave request not found' });
+    // Notify the employee about the approval/rejection decision
+    try {
+      const employeeResult = await db.query(
+        `SELECT id FROM employees WHERE full_name = $1`,
+        [leaveRequest.employee_name]
+      );
+
+      if (employeeResult.rows.length > 0) {
+        const employeeId = employeeResult.rows[0].id;
+        const statusMessage = status === 'approved' ? 'approved' : 'rejected';
+        const actionWord = status === 'approved' ? 'Approved' : 'Rejected';
+
+        await db.query(
+          `INSERT INTO notifications (
+            employee_id, type, title, message, 
+            related_entity_type, related_entity_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+          [
+            employeeId,
+            'leave_request',
+            `Leave Request ${actionWord}`,
+            `Your ${leaveRequest.leave_type} leave request has been ${statusMessage}. ${comments ? 'Comments: ' + comments : ''}`,
+            'leave_request',
+            id
+          ]
+        );
+      }
+    } catch (notifErr) {
+      console.error('Error creating approval notification:', notifErr);
+      // Don't fail the request if notification fails
     }
     
     res.json(result.rows[0]);
