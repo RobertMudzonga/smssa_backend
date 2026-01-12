@@ -5,7 +5,14 @@ const db = require('../db');
 // GET /api/employees - list employees
 router.get('/', async (req, res) => {
   try {
-    const q = `SELECT id, full_name, work_email, job_position, department, manager_id, is_active, created_at FROM employees ORDER BY full_name`;
+    const q = `
+      SELECT e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.created_at,
+             array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
+      FROM employees e
+      LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
+      GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.created_at
+      ORDER BY e.full_name
+    `;
     const { rows } = await db.query(q);
     
     // Fetch metrics for each employee (projects and conversions)
@@ -17,7 +24,7 @@ router.get('/', async (req, res) => {
       
       // Count prospects converted (stage 13 = won/converted)
       const conversionsQuery = `SELECT COUNT(*) as count FROM prospects WHERE assigned_to = $1 AND stage_id = 13`;
-      const conversionsResult = await db.query(conversionsQuery, [emp.work_email]).catch(() => ({ rows: [{ count: '0' }] }));
+      const conversionsResult = await db.query(conversionsQuery, [emp.id]).catch(() => ({ rows: [{ count: '0' }] }));
       const conversions_count = parseInt(conversionsResult.rows[0]?.count || '0');
       
       return {
@@ -98,8 +105,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // POST /api/employees/:id/metrics - trigger a metrics calculation (lightweight)
 router.post('/:id/metrics', async (req, res) => {
   const { id } = req.params;
@@ -114,3 +119,28 @@ router.post('/:id/metrics', async (req, res) => {
     res.status(500).json({ error: 'Failed to schedule metrics calculation' });
   }
 });
+
+// GET /api/employees/:id/permissions - get employee permissions
+router.get('/:id/permissions', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const q = `
+      SELECT e.id, e.full_name, e.work_email, e.role, e.department, e.job_position,
+             array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
+      FROM employees e
+      LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
+      WHERE e.id = $1
+      GROUP BY e.id, e.full_name, e.work_email, e.role, e.department, e.job_position
+    `;
+    const { rows } = await db.query(q, [id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error fetching employee permissions:', err);
+    res.status(500).json({ error: 'Failed to fetch employee permissions' });
+  }
+});
+
+module.exports = router;
