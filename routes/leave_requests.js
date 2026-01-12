@@ -81,11 +81,30 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    // Look up employee by email
+    let employeeId = null;
+    let employeeName = null;
+    
+    try {
+      const employeeResult = await db.query(
+        `SELECT id, full_name FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
+        [createdBy]
+      );
+      
+      if (employeeResult.rows.length > 0) {
+        employeeId = employeeResult.rows[0].id;
+        employeeName = employeeResult.rows[0].full_name;
+      }
+    } catch (err) {
+      console.warn('Could not look up employee:', err);
+      // Continue without employee info
+    }
+
     const result = await db.query(
-      `INSERT INTO leave_requests (leave_type, start_date, end_date, reason, status, created_by)
-       VALUES ($1, $2, $3, $4, 'pending', $5)
+      `INSERT INTO leave_requests (employee_id, employee_name, leave_type, start_date, end_date, reason, status, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
        RETURNING *`,
-      [leave_type, start_date, end_date, reason || '', createdBy]
+      [employeeId, employeeName || createdBy, leave_type, start_date, end_date, reason || '', createdBy]
     );
     
     res.status(201).json(result.rows[0]);
