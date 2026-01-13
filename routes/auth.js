@@ -98,6 +98,25 @@ router.post('/login', async (req, res) => {
       // strip sensitive fields before returning
       delete user.password_hash;
       delete user.password_salt;
+      
+      // Fetch employee info to attach to user object
+      try {
+        const employeeResult = await db.query(
+          'SELECT id as employee_id, full_name, job_position, department, role FROM employees WHERE work_email = $1 LIMIT 1',
+          [email]
+        );
+        if (employeeResult.rows.length > 0) {
+          const employee = employeeResult.rows[0];
+          user.employee_id = employee.employee_id;
+          user.full_name = employee.full_name;
+          user.job_position = employee.job_position;
+          user.department = employee.department;
+          user.role = employee.role;
+        }
+      } catch (empErr) {
+        console.warn('Could not fetch employee info for user:', empErr);
+      }
+      
       return res.json({ ok: true, user });
     } catch (e) {
       console.warn('DB login failed', e.message || e);

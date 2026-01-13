@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { getEmployeesByRole } = require('../lib/notifications');
 
 console.log('Loaded routes/payment_requests.js');
 
@@ -65,23 +66,30 @@ router.post('/', async (req, res) => {
     );
     console.log('Payment request created:', result.rows[0]);
 
-    // Notify Prisca (accountant, id=12) about the new payment request
+    // Notify all accountants about the new payment request
     try {
+      const accountants = await getEmployeesByRole('accountant');
       const urgencyLabel = is_urgent ? 'URGENT ' : '';
-      await db.query(
-        `INSERT INTO notifications (
-          employee_id, type, title, message, 
-          related_entity_type, related_entity_id, created_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
-        [
-          12, // Prisca Sibanda (accountant)
-          'payment_request',
-          `New ${urgencyLabel}Payment Request from ${requesterName}`,
-          `A payment request for ZWL ${amount} has been submitted. Description: ${description}. Due: ${due_date}`,
-          'payment_request',
-          result.rows[0].payment_request_id
-        ]
-      );
+      const urgencyPrefix = is_urgent ? '🔴 ' : '';
+      const dueInfo = due_date ? ` Due: ${new Date(due_date).toLocaleDateString()}` : '';
+      
+      for (const accountant of accountants) {
+        await db.query(
+          `INSERT INTO notifications (
+            employee_id, type, title, message, 
+            related_entity_type, related_entity_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+          [
+            accountant.id,
+            'payment_request',
+            `${urgencyPrefix}New ${urgencyLabel}Payment Request`,
+            `${requesterName} submitted a payment request for ZWL ${amount.toLocaleString()}. ${description}.${dueInfo}`,
+            'payment_request',
+            result.rows[0].payment_request_id
+          ]
+        );
+      }
+      console.log(`Notified ${accountants.length} accountant(s) about payment request`);
     } catch (notifErr) {
       console.error('Error creating payment request notification:', notifErr);
       // Don't fail the request if notification fails

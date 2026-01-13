@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { createNotification } = require('../lib/notifications');
 
 console.log('Loaded routes/prospects.js');
 
@@ -249,6 +250,17 @@ router.post('/', async (req, res) => {
       'assigned_to','quote_sent_date','quote_amount','professional_fees','deposit_amount','expected_closing_date','expected_payment_date','forecast_amount','forecast_probability','notes'
     ];
 
+    // Get current prospect state to detect assignment changes
+    let currentProspect = null;
+    try {
+      const currentRes = await db.query('SELECT * FROM prospects WHERE prospect_id = $1', [id]);
+      if (currentRes.rows.length > 0) {
+        currentProspect = currentRes.rows[0];
+      }
+    } catch (err) {
+      console.error('Error fetching current prospect:', err);
+    }
+
     const updates = [];
     const values = [];
     let i = 1;
@@ -282,6 +294,30 @@ router.post('/', async (req, res) => {
       console.log('With values:', values);
       const result = await db.query(sql, values);
       if (result.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
+
+      // Notify if prospect was assigned to someone
+      if (req.body.assigned_to && currentProspect && req.body.assigned_to !== currentProspect.assigned_to) {
+        try {
+          const p = result.rows[0];
+          const prospectName = p.deal_name || 
+            `${p.first_name || ''} ${p.last_name || ''}`.trim() || 
+            'Prospect';
+          const companyInfo = p.company ? ` from ${p.company}` : '';
+          const valueInfo = p.quote_amount ? ` (Value: $${p.quote_amount})` : '';
+          
+          await createNotification({
+            employee_id: req.body.assigned_to,
+            type: 'prospect_assigned',
+            title: 'New Prospect Assigned',
+            message: `You have been assigned to prospect: ${prospectName}${companyInfo}${valueInfo}`,
+            related_entity_type: 'prospect',
+            related_entity_id: p.prospect_id
+          });
+          console.log(`Notified employee ${req.body.assigned_to} about prospect assignment`);
+        } catch (notifErr) {
+          console.error('Error creating prospect assignment notification:', notifErr);
+        }
+      }
 
       // transform response to frontend shape
       const p = result.rows[0];

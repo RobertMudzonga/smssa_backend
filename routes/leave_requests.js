@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { notifyManagers } = require('../lib/notifications');
 
 // Create leave request table if it doesn't exist
 router.use(async (req, res, next) => {
@@ -111,45 +112,22 @@ router.post('/', async (req, res) => {
     
     const leaveRequest = result.rows[0];
 
-    // Create notification for manager and approvers
+    // Notify all managers about the new leave request
     try {
-      // Find managers who need to approve this leave request
-      const managersQuery = `
-        SELECT DISTINCT m.id, m.full_name
-        FROM employees e
-        LEFT JOIN employees m ON e.manager_id = m.id
-        WHERE e.id = $1 OR (e.department = $2 AND (m.role = 'department_manager' OR m.role = 'overall_manager'))
-      `;
-      const managersResult = await db.query(managersQuery, [employeeId, employeeDepartment]);
+      const startFormatted = new Date(start_date).toLocaleDateString();
+      const endFormatted = new Date(end_date).toLocaleDateString();
+      const duration = Math.ceil((new Date(end_date) - new Date(start_date)) / (1000 * 60 * 60 * 24)) + 1;
+      const durationText = duration > 1 ? ` (${duration} days)` : ' (1 day)';
+      const reasonText = reason ? ` Reason: ${reason}` : '';
       
-      // Also notify overall manager (Munya - id 2)
-      const notificationRecipients = new Set();
-      managersResult.rows.forEach(row => {
-        if (row.id) notificationRecipients.add(row.id);
+      await notifyManagers({
+        type: 'leave_request',
+        title: `Leave Request: ${employeeName || createdBy}`,
+        message: `${employeeName || createdBy} requested ${leave_type} leave from ${startFormatted} to ${endFormatted}${durationText}.${reasonText}`,
+        related_entity_type: 'leave_request',
+        related_entity_id: leaveRequest.id
       });
-      notificationRecipients.add(2); // Overall manager
-
-      // Create notifications for all approvers
-      for (const recipientId of notificationRecipients) {
-        try {
-          await db.query(
-            `INSERT INTO notifications (
-              employee_id, type, title, message, 
-              related_entity_type, related_entity_id, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
-            [
-              recipientId,
-              'leave_request',
-              `New Leave Request from ${employeeName}`,
-              `${employeeName} has requested ${leave_type} leave from ${start_date} to ${end_date}`,
-              'leave_request',
-              leaveRequest.id
-            ]
-          );
-        } catch (notifErr) {
-          console.error('Error creating notification:', notifErr);
-        }
-      }
+      console.log('Notified managers about new leave request');
     } catch (notifErr) {
       console.error('Error sending leave request notifications:', notifErr);
       // Don't fail the request if notification fails

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { notifyManagers, createNotification } = require('../lib/notifications');
 
 // --- 1. CREATE PROJECT ---
 // Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
@@ -156,6 +157,27 @@ router.post('/', async (req, res) => {
         }
 
         await client.query('COMMIT');
+        
+        // Notify assigned user if project was assigned during creation
+        if (assigned_user_id) {
+            try {
+                const projectIdentifier = project_name || client_name || `Project #${projectId}`;
+                const clientInfo = client_name ? ` for client ${client_name}` : '';
+                const caseInfo = case_type ? ` (${case_type})` : '';
+                await createNotification({
+                    employee_id: assigned_user_id,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned',
+                    message: `You have been assigned to project: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: projectId
+                });
+                console.log(`Notified employee ${assigned_user_id} about project assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
         res.status(201).json({ message: "Project created successfully", projectId, project: createdProject });
 
     } catch (err) {
@@ -283,6 +305,17 @@ router.patch('/:id', async (req, res) => {
         const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
         const existingCols = colRes.rows.map(r => r.column_name);
 
+        // Get the current project state before update to detect assignment changes
+        let currentProject = null;
+        try {
+            const currentRes = await db.query('SELECT * FROM projects WHERE project_name = $1', [id]);
+            if (currentRes.rows.length > 0) {
+                currentProject = currentRes.rows[0];
+            }
+        } catch (err) {
+            console.error('Error fetching current project:', err);
+        }
+
         // Allowed editable fields
         const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id'];
         const parts = [];
@@ -301,6 +334,27 @@ router.patch('/:id', async (req, res) => {
         const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
         const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE project_name = $${i} RETURNING *`;
         const result = await db.query(q, values);
+        
+        // Notify if project manager was changed
+        if (updates.project_manager_id && currentProject && updates.project_manager_id !== currentProject.project_manager_id) {
+            try {
+                const projectIdentifier = updates.project_name || currentProject.project_name || `Project #${currentProject.project_id}`;
+                const clientInfo = currentProject.client_name ? ` for client ${currentProject.client_name}` : '';
+                const caseInfo = currentProject.case_type ? ` (${currentProject.case_type})` : '';
+                await createNotification({
+                    employee_id: updates.project_manager_id,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned as Manager',
+                    message: `You have been assigned as project manager for: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: currentProject.project_id
+                });
+                console.log(`Notified employee ${updates.project_manager_id} about project manager assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
         return res.json(result.rows[0] || {});
     } catch (err) {
         console.error('Project details update failed:', err);
@@ -514,6 +568,30 @@ router.patch('/:id/stage', async (req, res) => {
         try {
             console.log('Executing project update:', query, values);
             const result = await db.query(query, values);
+            
+            // Check if project moved to stage 3 (Submission stage)
+            if (result.rows[0] && updates.current_stage === 3) {
+                const project = result.rows[0];
+                const projectIdentifier = project.project_name || `Project #${project.project_id}`;
+                const clientInfo = project.client_name ? ` for ${project.client_name}` : '';
+                const caseInfo = project.case_type ? ` (${project.case_type})` : '';
+                
+                // Notify managers about stage 3 submission
+                try {
+                    await notifyManagers({
+                        type: 'project_stage_3',
+                        title: `Project Reached Submission Stage`,
+                        message: `Project "${projectIdentifier}"${clientInfo}${caseInfo} has reached stage 3 (Submission). Review required.`,
+                        related_entity_type: 'project',
+                        related_entity_id: project.project_id
+                    });
+                    console.log(`Notified managers about project ${projectIdentifier} reaching stage 3`);
+                } catch (notifErr) {
+                    console.error('Error creating stage 3 notification:', notifErr);
+                    // Don't fail the update if notification fails
+                }
+            }
+            
             res.json(result.rows[0]);
         } catch (err) {
             console.error("Project update failed:", err);
