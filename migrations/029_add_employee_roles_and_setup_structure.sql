@@ -4,24 +4,28 @@
 -- Add role field to employees table
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'employee';
 
--- Clear existing employees for clean setup (if any exist)
-TRUNCATE TABLE employees RESTART IDENTITY CASCADE;
+-- Note: We no longer truncate employees table to preserve existing data
+-- If you need to reset employees, do so manually with care for foreign key dependencies
 
 -- Insert employees in correct order (managers first, then their reports)
+-- Using ON CONFLICT DO NOTHING to preserve any existing employee edits
 -- Super Admin & Overall Manager
 INSERT INTO employees (id, full_name, work_email, job_position, department, manager_id, role, is_active) VALUES
 (1, 'Robert Mudzonga', 'robert@immigrationspecialists.co.za', 'Super Admin', 'Management', NULL, 'super_admin', TRUE),
-(2, 'Munya', 'munya@immigrationspecialists.co.za', 'Overall Manager', 'Management', NULL, 'overall_manager', TRUE);
+(2, 'Munya', 'munya@immigrationspecialists.co.za', 'Overall Manager', 'Management', NULL, 'overall_manager', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- Sales Department
 INSERT INTO employees (id, full_name, work_email, job_position, department, manager_id, role, is_active) VALUES
-(3, 'Tendai', 'tendai@immigrationspecialists.co.za', 'Sales Manager', 'Sales', 2, 'department_manager', TRUE);
+(3, 'Tendai', 'tendai@immigrationspecialists.co.za', 'Sales Manager', 'Sales', 2, 'department_manager', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- Legal Department (Emily is manager)
 INSERT INTO employees (id, full_name, work_email, job_position, department, manager_id, role, is_active) VALUES
 (4, 'Emily', 'emily@immigrationspecialists.co.za', 'Legal Manager', 'Legal', 2, 'department_manager', TRUE),
 (5, 'Takura', 'takura@immigrationspecialists.co.za', 'Legal Officer', 'Legal', 4, 'employee', TRUE),
-(6, 'Hapson', 'hapson@immigrationspecialists.co.za', 'Legal Officer', 'Legal', 4, 'employee', TRUE);
+(6, 'Hapson', 'hapson@immigrationspecialists.co.za', 'Legal Officer', 'Legal', 4, 'employee', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- Projects Department (Salome is primary manager, Emily is also a manager here)
 INSERT INTO employees (id, full_name, work_email, job_position, department, manager_id, role, is_active) VALUES
@@ -29,11 +33,13 @@ INSERT INTO employees (id, full_name, work_email, job_position, department, mana
 (8, 'Abongile', 'abongile@immigrationspecialists.co.za', 'Project Coordinator', 'Projects', 7, 'employee', TRUE),
 (9, 'Phyllis', 'phyllis@immigrationspecialists.co.za', 'Project Coordinator', 'Projects', 7, 'employee', TRUE),
 (10, 'Malwande', 'malwande@immigrationspecialists.co.za', 'Project Coordinator', 'Projects', 7, 'employee', TRUE),
-(11, 'Victor', 'victor@immigrationspecialists.co.za', 'Project Coordinator', 'Projects', 7, 'employee', TRUE);
+(11, 'Victor', 'victor@immigrationspecialists.co.za', 'Project Coordinator', 'Projects', 7, 'employee', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- Accounts Department
 INSERT INTO employees (id, full_name, work_email, job_position, department, manager_id, role, is_active) VALUES
-(12, 'Prisca Sibanda', 'prisca@immigrationspecialists.co.za', 'Accountant', 'Accounts', 2, 'accountant', TRUE);
+(12, 'Prisca Sibanda', 'prisca@immigrationspecialists.co.za', 'Accountant', 'Accounts', 2, 'accountant', TRUE)
+ON CONFLICT (id) DO NOTHING;
 
 -- Reset the sequence to continue from the last ID
 SELECT setval('employees_id_seq', (SELECT MAX(id) FROM employees));
@@ -49,7 +55,19 @@ CREATE TABLE IF NOT EXISTS employee_permissions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Add unique constraint if it doesn't exist
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'employee_permissions_employee_id_permission_key'
+  ) THEN
+    ALTER TABLE employee_permissions ADD CONSTRAINT employee_permissions_employee_id_permission_key UNIQUE(employee_id, permission);
+  END IF;
+END $$;
+
 -- Grant permissions based on roles
+-- Using ON CONFLICT to handle cases where permissions already exist
 -- Robert (Super Admin) - all permissions
 INSERT INTO employee_permissions (employee_id, permission) VALUES
 (1, 'manage_employees'),
@@ -59,7 +77,8 @@ INSERT INTO employee_permissions (employee_id, permission) VALUES
 (1, 'review_projects'),
 (1, 'manage_leads'),
 (1, 'manage_prospects'),
-(1, 'view_all_data');
+(1, 'view_all_data')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 -- Munya (Overall Manager) - approves everything, reviews projects
 INSERT INTO employee_permissions (employee_id, permission) VALUES
@@ -67,30 +86,35 @@ INSERT INTO employee_permissions (employee_id, permission) VALUES
 (2, 'approve_payment_requests'),
 (2, 'review_projects'),
 (2, 'manage_projects'),
-(2, 'view_all_data');
+(2, 'view_all_data')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 -- Tendai (Sales Manager)
 INSERT INTO employee_permissions (employee_id, permission) VALUES
 (3, 'manage_leads'),
 (3, 'manage_prospects'),
-(3, 'approve_leave_requests');
+(3, 'approve_leave_requests')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 -- Emily (Legal & Projects Manager)
 INSERT INTO employee_permissions (employee_id, permission) VALUES
 (4, 'approve_leave_requests'),
 (4, 'review_projects'),
-(4, 'manage_projects');
+(4, 'manage_projects')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 -- Salome (Project Manager)
 INSERT INTO employee_permissions (employee_id, permission) VALUES
 (7, 'approve_leave_requests'),
 (7, 'review_projects'),
-(7, 'manage_projects');
+(7, 'manage_projects')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 -- Prisca (Accountant)
 INSERT INTO employee_permissions (employee_id, permission) VALUES
 (12, 'approve_payment_requests'),
-(12, 'view_financial_data');
+(12, 'view_financial_data')
+ON CONFLICT (employee_id, permission) DO NOTHING;
 
 CREATE INDEX IF NOT EXISTS idx_employee_permissions_employee ON employee_permissions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_employee_permissions_permission ON employee_permissions(permission);

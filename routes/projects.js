@@ -338,6 +338,7 @@ router.get('/', async (req, res) => {
         // Build a select list that includes useful project fields when available
         const selectCols = [];
         const add = (c, alias) => { if (cols.includes(c)) selectCols.push(`p.${c}${alias ? ` as ${alias}` : ''}`); };
+        add('project_id');
         add('project_name');
         add('client_name');
         add('client_email');
@@ -351,6 +352,7 @@ router.get('/', async (req, res) => {
         add('payment_amount');
         add('created_at');
         add('project_manager_id');
+        add('current_stage');
 
         // Always include lead names when available, but only join if the `leads` table exists
         let joinLead = cols.includes('client_lead_id');
@@ -398,7 +400,7 @@ router.get('/', async (req, res) => {
 
         // Map rows to include sensible fallbacks for the frontend
         const rows = result.rows.map(r => ({
-            project_id: r.project_name,
+            project_id: r.project_id,
             project_name: r.project_name || r.name || r.company || 'Unnamed Project',
             client_name: r.client_name || `${r.first_name || ''} ${r.last_name || ''}`.trim() || '',
             client_email: r.client_email || '',
@@ -411,6 +413,7 @@ router.get('/', async (req, res) => {
             project_manager_id: r.project_manager_id || null,
             project_manager_name: r.project_manager_name || '',
             project_manager_email: r.project_manager_email || '',
+            current_stage: r.current_stage,
             created_at: r.created_at
         }));
         res.json(rows);

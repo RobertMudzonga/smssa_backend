@@ -10,8 +10,17 @@ DROP INDEX IF EXISTS idx_projects_unique_project_name;
 -- Drop the inline UNIQUE constraint if it exists
 ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_project_name_key;
 
--- Create a proper simple UNIQUE constraint (not partial)
-ALTER TABLE projects ADD CONSTRAINT projects_project_name_unique UNIQUE (project_name);
+-- Create a proper simple UNIQUE constraint (not partial) if it doesn't exist
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint 
+    WHERE conname = 'projects_project_name_unique' 
+    AND conrelid = 'projects'::regclass
+  ) THEN
+    ALTER TABLE projects ADD CONSTRAINT projects_project_name_unique UNIQUE (project_name);
+  END IF;
+END $$;
 
 -- Create a simple index on project_name for performance
 CREATE INDEX IF NOT EXISTS idx_projects_project_name ON projects(project_name);
