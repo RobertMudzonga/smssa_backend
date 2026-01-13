@@ -308,7 +308,12 @@ router.patch('/:id', async (req, res) => {
         // Get the current project state before update to detect assignment changes
         let currentProject = null;
         try {
-            const currentRes = await db.query('SELECT * FROM projects WHERE project_name = $1', [id]);
+            // Support both project_id and project_name lookup
+            const isNumeric = /^\d+$/.test(id);
+            const currentQuery = isNumeric 
+                ? 'SELECT * FROM projects WHERE project_id = $1'
+                : 'SELECT * FROM projects WHERE project_name = $1';
+            const currentRes = await db.query(currentQuery, [id]);
             if (currentRes.rows.length > 0) {
                 currentProject = currentRes.rows[0];
             }
@@ -332,7 +337,10 @@ router.patch('/:id', async (req, res) => {
 
         values.push(id);
         const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
-        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE project_name = $${i} RETURNING *`;
+        // Support both project_id and project_name in WHERE clause
+        const isNumeric = /^\d+$/.test(id);
+        const whereClause = isNumeric ? `project_id = $${i}` : `project_name = $${i}`;
+        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE ${whereClause} RETURNING *`;
         const result = await db.query(q, values);
         
         // Notify if project manager was changed
@@ -550,20 +558,21 @@ router.patch('/:id/stage', async (req, res) => {
         if (queryParts.length === 0) return res.status(400).json({ error: "No valid fields to update" });
 
         // Support both project_name and numeric project_id
-        let whereClause = 'WHERE project_id = $';
-        const idValue = isNaN(id) ? undefined : parseInt(id);
+        const isNumeric = /^\d+$/.test(id);
         
-        if (isNaN(id) || idValue === NaN) {
+        if (isNumeric) {
+            // It's a numeric project_id
+            values.push(parseInt(id));
+        } else {
             // It's a project name
             values.push(id);
-        } else {
-            // It's a numeric ID
-            values.push(idValue);
         }
+        
+        const whereClause = isNumeric ? `WHERE project_id = $${counter}` : `WHERE project_name = $${counter}`;
         
         // Only set updated_at if the column exists in this projects table
         const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
-        const query = `UPDATE projects SET ${queryParts.join(', ')}${setUpdatedAt} ${whereClause}${counter} RETURNING *`;
+        const query = `UPDATE projects SET ${queryParts.join(', ')}${setUpdatedAt} ${whereClause} RETURNING *`;
 
         try {
             console.log('Executing project update:', query, values);
