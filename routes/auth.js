@@ -99,10 +99,16 @@ router.post('/login', async (req, res) => {
       delete user.password_hash;
       delete user.password_salt;
       
-      // Fetch employee info to attach to user object
+      // Fetch employee info and permissions to attach to user object
       try {
         const employeeResult = await db.query(
-          'SELECT id as employee_id, full_name, job_position, department, role FROM employees WHERE work_email = $1 LIMIT 1',
+          `SELECT e.id as employee_id, e.full_name, e.job_position, e.department, e.role, e.is_super_admin,
+                  array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
+           FROM employees e
+           LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
+           WHERE e.work_email = $1
+           GROUP BY e.id, e.full_name, e.job_position, e.department, e.role, e.is_super_admin
+           LIMIT 1`,
           [email]
         );
         if (employeeResult.rows.length > 0) {
@@ -112,6 +118,8 @@ router.post('/login', async (req, res) => {
           user.job_position = employee.job_position;
           user.department = employee.department;
           user.role = employee.role;
+          user.is_super_admin = employee.is_super_admin || false;
+          user.permissions = employee.permissions || [];
         }
       } catch (empErr) {
         console.warn('Could not fetch employee info for user:', empErr);

@@ -6,11 +6,11 @@ const db = require('../db');
 router.get('/', async (req, res) => {
   try {
     const q = `
-      SELECT e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.created_at,
+      SELECT e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at,
              array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
       FROM employees e
       LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
-      GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.created_at
+      GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at
       ORDER BY e.full_name
     `;
     const { rows } = await db.query(q);
@@ -45,7 +45,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const q = `SELECT id, full_name, work_email, job_position, department, manager_id, is_active, created_at FROM employees WHERE id=$1`;
+    const q = `SELECT id, full_name, work_email, job_position, department, manager_id, is_active, is_super_admin, created_at FROM employees WHERE id=$1`;
     const { rows } = await db.query(q, [id]);
     if (!rows[0]) return res.status(404).json({ error: 'Employee not found' });
     res.json(rows[0]);
@@ -74,7 +74,7 @@ router.patch('/:id', async (req, res) => {
   const fields = [];
   const vals = [];
   let idx = 1;
-  for (const key of ['full_name','work_email','job_position','department','manager_id','is_active']) {
+  for (const key of ['full_name','work_email','job_position','department','manager_id','is_active','is_super_admin']) {
     if (req.body[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       vals.push(req.body[key]);
