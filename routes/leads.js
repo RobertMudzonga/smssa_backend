@@ -73,7 +73,41 @@ router.get('/', async (req, res) => {
     }
 });
 
-// --- 2. UPDATE LEAD STAGE (Moving lead through cold funnel or prospect pipeline) ---
+// --- 2. GET SINGLE LEAD WITH FULL DETAILS (including form responses) ---
+router.get('/:id', async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        const result = await db.query(`
+            SELECT 
+                l.*,
+                ps.name as stage_name,
+                e.full_name as assigned_to_name,
+                e.work_email as assigned_to_email
+            FROM leads l
+            LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
+            LEFT JOIN employees e ON l.assigned_employee_id = e.id
+            WHERE l.lead_id = $1
+        `, [id]);
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Lead not found' });
+        }
+        
+        const lead = result.rows[0];
+        // Use cold_lead_stage if it exists
+        if (lead.cold_lead_stage) {
+            lead.current_stage_id = lead.cold_lead_stage;
+        }
+        
+        res.json(lead);
+    } catch (err) {
+        console.error('Error fetching lead details:', err);
+        res.status(500).json({ error: 'Failed to fetch lead details', detail: err.message });
+    }
+});
+
+// --- 3. UPDATE LEAD STAGE (Moving lead through cold funnel or prospect pipeline) ---
 router.patch('/:id/stage', async (req, res) => {
     const { id } = req.params;
     const { stage_id } = req.body; // Can be 1-13 (prospect stages) or 101-104 (cold lead stages)
@@ -119,7 +153,7 @@ router.patch('/:id/stage', async (req, res) => {
     }
 });
 
-// --- 3. ASSIGN LEAD TO EMPLOYEE (Salesperson) ---
+// --- 4. ASSIGN LEAD TO EMPLOYEE (Salesperson) ---
 router.patch('/:id/assign', async (req, res) => {
     const { id } = req.params;
     const { employee_id } = req.body;
@@ -186,7 +220,7 @@ router.patch('/:id/assign', async (req, res) => {
     }
 });
 
-// --- 4. ADD COMMENT TO LEAD ---
+// --- 5. ADD COMMENT TO LEAD ---
 router.patch('/:id/comment', async (req, res) => {
     const { id } = req.params;
     const { comment } = req.body;
@@ -216,7 +250,7 @@ router.patch('/:id/comment', async (req, res) => {
     }
 });
 
-// --- 5. MARK LEAD AS LOST ---
+// --- 6. MARK LEAD AS LOST ---
 router.patch('/:id/lost', async (req, res) => {
     const { id } = req.params;
     const { reason } = req.body;
@@ -246,7 +280,7 @@ router.patch('/:id/lost', async (req, res) => {
     }
 });
 
-// --- 6. DELETE LEAD (for duplicates) ---
+// --- 7. DELETE LEAD (for duplicates) ---
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
 
@@ -264,7 +298,7 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// --- 7. ZAPIER / WEBHOOK ENDPOINT (Lead Ingestion) ---
+// --- 8. ZAPIER / WEBHOOK ENDPOINT (Lead Ingestion) ---
 // Public endpoint for POST requests from Zapier and other form providers
 // Endpoint: POST /api/leads/webhook
 router.post('/webhook', async (req, res) => {
@@ -318,6 +352,33 @@ router.post('/webhook', async (req, res) => {
     const source_id = getField(['source_id', 'lead_id', 'zap_id', 'entry_id']) || null;
     const form_name = getField(['form_name', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
 
+    // Extract form responses (question/answer pairs)
+    // Look for fields that start with "Raw" or other question patterns
+    const form_responses = [];
+    const excludedFields = new Set([
+        'first_name', 'firstname', 'last_name', 'lastname', 'email', 'phone', 
+        'company', 'source', 'form_name', 'form_id', 'source_id', 'name', 'full_name',
+        'page_id', 'page_name', 'form name', 'ad', 'ad_name'
+    ]);
+    
+    for (const [key, value] of Object.entries(body)) {
+        const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+        
+        // Skip if it's a standard field or empty value
+        if (excludedFields.has(normalizedKey) || !value || String(value).trim() === '') {
+            continue;
+        }
+        
+        // Include fields that look like questions (Raw prefix, or contain question words)
+        if (key.startsWith('Raw') || key.includes('?') || 
+            /^(Are|Is|Do|Does|Have|Has|What|Which|When|Where|Why|How)/i.test(key)) {
+            form_responses.push({
+                question: key,
+                answer: String(value).trim()
+            });
+        }
+    }
+
     // Basic validation: prefer email, fallback to phone
     if (!email && !phone) {
         return res.status(400).json({ error: 'Missing contact fields: provide email or phone' });
@@ -351,9 +412,10 @@ router.post('/webhook', async (req, res) => {
         const result = await db.query(
             `INSERT INTO leads (
                 first_name, last_name, email, phone, company,
-                source, source_id, form_id, cold_lead_stage, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,101,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING lead_id`,
-            [insertFirst, insertLast, email, phone, company, source, source_id, form_name]
+                source, source_id, form_id, form_responses, cold_lead_stage, created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,101,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING lead_id`,
+            [insertFirst, insertLast, email, phone, company, source, source_id, form_name, 
+             form_responses.length > 0 ? JSON.stringify(form_responses) : null]
         );
 
         console.log('Webhook created lead', result.rows[0].lead_id, 'source=', source, 'form=', form_name);
@@ -364,9 +426,7 @@ router.post('/webhook', async (req, res) => {
     }
 });
 
-module.exports = router;
-
-// --- 8. CONVERT LEAD TO PROSPECT ---
+// --- 9. CONVERT LEAD TO PROSPECT ---
 // Endpoint: POST /api/leads/:id/convert
 // Creates a new prospect record based on an existing lead.
 router.post('/:id/convert', async (req, res) => {
@@ -403,3 +463,5 @@ router.post('/:id/convert', async (req, res) => {
         res.status(500).json({ error: 'Failed to convert lead to prospect', detail: err.message });
     }
 });
+
+module.exports = router;
