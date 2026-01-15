@@ -357,7 +357,7 @@ router.post('/webhook', async (req, res) => {
     const form_responses = [];
     const excludedFields = new Set([
         'first_name', 'firstname', 'last_name', 'lastname', 'email', 'phone', 
-        'company', 'source', 'form_name', 'form_id', 'source_id', 'name', 'full_name',
+        'company', 'source', 'form_name', 'form_id', 'source_id',
         'page_id', 'page_name', 'form name', 'ad', 'ad_name'
     ]);
     
@@ -380,8 +380,9 @@ router.post('/webhook', async (req, res) => {
             continue;
         }
         
-        // Include fields that look like questions (Raw prefix, or contain question words)
-        if (key.startsWith('Raw') || key.includes('?') || 
+        // Include fields that look like questions (Raw prefix, contain question words, or name fields)
+        const isNameField = /name/i.test(key) && !excludedFields.has(normalizedKey);
+        if (key.startsWith('Raw') || key.includes('?') || isNameField ||
             /^(Are|Is|Do|Does|Have|Has|What|Which|When|Where|Why|How)/i.test(key)) {
             form_responses.push({
                 question: formatQuestionText(key),
