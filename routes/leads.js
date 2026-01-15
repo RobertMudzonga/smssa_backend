@@ -335,9 +335,9 @@ router.post('/webhook', async (req, res) => {
     }
 
     // Extract name parts
-    let first_name = getField(['first_name', 'firstname', 'firstName', 'given_name', 'givenName']);
-    let last_name = getField(['last_name', 'lastname', 'lastName', 'family_name', 'familyName']);
-    const fullName = getField(['name', 'full_name', 'fullName', 'contact_name', 'ContactName', 'Full Name']);
+    let first_name = getField(['first_name', 'firstname', 'firstName', 'FIRST_NAME', 'given_name', 'givenName']);
+    let last_name = getField(['last_name', 'lastname', 'lastName', 'LAST_NAME', 'family_name', 'familyName']);
+    const fullName = getField(['name', 'full_name', 'fullName', 'FULL_NAME', 'contact_name', 'ContactName', 'Full Name']);
     if ((!first_name || !last_name) && fullName) {
         const parts = String(fullName).trim().split(/\s+/);
         first_name = first_name || parts[0] || null;
@@ -345,12 +345,12 @@ router.post('/webhook', async (req, res) => {
     }
 
     // Extract other fields with common fallbacks
-    const email = getField(['email', 'email_address', 'emailAddress', 'Email', 'Email Address', 'EmailAddress', '1Email']);
-    const phone = getField(['phone', 'phone_number', 'phoneNumber', 'mobile', 'Mobile', 'Phone Number', 'PhoneNumber', '1PhoneNumber']);
-    const company = getField(['company', 'company_name', 'Company', 'organization', 'org', 'Company Name', 'Business']);
-    const source = getField(['source', 'platform', 'utm_source']) || 'Webhook';
-    const source_id = getField(['source_id', 'lead_id', 'zap_id', 'entry_id']) || null;
-    const form_name = getField(['form_name', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
+    const email = getField(['email', 'email_address', 'emailAddress', 'EMAIL', 'Email', 'Email Address', 'EmailAddress', '1Email']);
+    const phone = getField(['phone', 'PHONE', 'phone_number', 'phoneNumber', 'PHONE_NUMBER', 'mobile', 'Mobile', 'Phone Number', 'PhoneNumber', '1PhoneNumber']);
+    const company = getField(['company', 'COMPANY', 'company_name', 'Company', 'organization', 'org', 'Company Name', 'Business']);
+    const source = getField(['source', 'SOURCE', 'platform', 'utm_source']) || 'Webhook';
+    const source_id = getField(['source_id', 'SOURCE_ID', 'lead_id', 'LEAD_ID', 'zap_id', 'entry_id']) || null;
+    const form_name = getField(['form_name', 'FORM_NAME', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
 
     // Extract form responses (question/answer pairs)
     // Look for fields that start with "Raw" or other question patterns
