@@ -410,7 +410,7 @@ router.post('/webhook', async (req, res) => {
         if (existing) {
             const newNote = `\n[${new Date().toISOString()}] New inquiry received via ${source} (Form: ${form_name || 'N/A'})`;
             await db.query(
-                `UPDATE leads SET notes = CONCAT(COALESCE(notes, ''), $1), updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2`,
+                `UPDATE leads SET notes = COALESCE(notes, '') || $1, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2`,
                 [newNote, existing.lead_id]
             );
             return res.status(200).json({ message: 'Lead already exists; updated notes.', id: existing.lead_id });
