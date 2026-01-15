@@ -6,6 +6,8 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 // --- 1. GET ALL LEADS (List/Kanban View) ---
 router.get('/', async (req, res) => {
     try {
+        const { assigned_employee_id } = req.query;
+        
         // First check if leads table exists
         const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
         if (!leadsExists.rows[0] || !leadsExists.rows[0].exists) {
@@ -16,6 +18,21 @@ router.get('/', async (req, res) => {
         // Check if prospect_stages table exists
         const psExists = await db.query("SELECT to_regclass('public.prospect_stages') as exists");
         const hasProspectStages = psExists.rows[0] && psExists.rows[0].exists;
+
+        // Build WHERE clause for filtering
+        const whereConditions = ['(l.converted IS NOT TRUE OR l.converted IS NULL)'];
+        const queryParams = [];
+        
+        if (assigned_employee_id) {
+            if (assigned_employee_id === 'unassigned') {
+                whereConditions.push('l.assigned_employee_id IS NULL');
+            } else {
+                queryParams.push(assigned_employee_id);
+                whereConditions.push(`l.assigned_employee_id = $${queryParams.length}`);
+            }
+        }
+        
+        const whereClause = whereConditions.join(' AND ');
 
         let result;
         if (hasProspectStages) {
@@ -28,17 +45,17 @@ router.get('/', async (req, res) => {
                 FROM leads l
                 LEFT JOIN prospect_stages ps ON l.current_stage_id = ps.stage_id
                 LEFT JOIN employees e ON l.assigned_employee_id = e.id
-                WHERE l.converted IS NOT TRUE OR l.converted IS NULL
+                WHERE ${whereClause}
                 ORDER BY l.updated_at DESC
-            `);
+            `, queryParams);
         } else {
             // Fallback: simple query without joins
             result = await db.query(`
                 SELECT l.*
                 FROM leads l
-                WHERE l.converted IS NOT TRUE OR l.converted IS NULL
+                WHERE ${whereClause}
                 ORDER BY l.updated_at DESC
-            `);
+            `, queryParams);
         }
         
         // Use cold_lead_stage if it exists, otherwise default to 101 (First Contact)
