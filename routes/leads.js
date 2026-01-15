@@ -363,9 +363,6 @@ router.post('/webhook', async (req, res) => {
     const form_name = getField(['form_name', 'FORM_NAME', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
     
     console.log('Extracted - email:', email, 'phone:', phone, 'form_name:', form_name);
-    const source = getField(['source', 'SOURCE', 'platform', 'utm_source']) || 'Webhook';
-    const source_id = getField(['source_id', 'SOURCE_ID', 'lead_id', 'LEAD_ID', 'zap_id', 'entry_id']) || null;
-    const form_name = getField(['form_name', 'FORM_NAME', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
 
     // Extract form responses (question/answer pairs)
     // Look for fields that start with "Raw" or other question patterns
