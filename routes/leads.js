@@ -285,7 +285,7 @@ router.post('/webhook', async (req, res) => {
     const company = getField(['company', 'company_name', 'Company', 'organization', 'org']);
     const source = getField(['source', 'platform', 'utm_source']) || 'Webhook';
     const source_id = getField(['source_id', 'lead_id', 'zap_id', 'entry_id']) || null;
-    const form_name = getField(['form_name', 'form', 'form_id', 'formName']) || null;
+    const form_name = getField(['form_name', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName']) || null;
 
     // Basic validation: prefer email, fallback to phone
     if (!email && !phone) {
