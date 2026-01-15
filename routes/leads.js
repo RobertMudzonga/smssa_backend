@@ -261,10 +261,24 @@ router.post('/webhook', async (req, res) => {
 
     const body = req.body || {};
 
+    // Build a normalized key map to handle Zapier keys like "1. Full Name" / "Phone Number"
+    const normalizedBody = {};
+    for (const [k, v] of Object.entries(body)) {
+        const norm = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+        normalizedBody[norm] = v;
+    }
+
     // Helper: flexible field extraction supporting many Zapier/form providers
     function getField(candidates = []) {
         for (const key of candidates) {
+            // 1) exact key match
             if (body[key] !== undefined && body[key] !== null && String(body[key]).trim() !== '') return body[key];
+
+            // 2) normalized key match (handles spaces/punctuation/prefixes)
+            const norm = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (normalizedBody[norm] !== undefined && normalizedBody[norm] !== null && String(normalizedBody[norm]).trim() !== '') {
+                return normalizedBody[norm];
+            }
         }
         return null;
     }
@@ -272,7 +286,7 @@ router.post('/webhook', async (req, res) => {
     // Extract name parts
     let first_name = getField(['first_name', 'firstname', 'firstName', 'given_name', 'givenName']);
     let last_name = getField(['last_name', 'lastname', 'lastName', 'family_name', 'familyName']);
-    const fullName = getField(['name', 'full_name', 'fullName', 'contact_name', 'ContactName']);
+    const fullName = getField(['name', 'full_name', 'fullName', 'contact_name', 'ContactName', 'Full Name']);
     if ((!first_name || !last_name) && fullName) {
         const parts = String(fullName).trim().split(/\s+/);
         first_name = first_name || parts[0] || null;
@@ -280,12 +294,12 @@ router.post('/webhook', async (req, res) => {
     }
 
     // Extract other fields with common fallbacks
-    const email = getField(['email', 'email_address', 'emailAddress', 'Email']);
-    const phone = getField(['phone', 'phone_number', 'phoneNumber', 'mobile', 'Mobile']);
-    const company = getField(['company', 'company_name', 'Company', 'organization', 'org']);
+    const email = getField(['email', 'email_address', 'emailAddress', 'Email', 'Email Address', 'EmailAddress', '1Email']);
+    const phone = getField(['phone', 'phone_number', 'phoneNumber', 'mobile', 'Mobile', 'Phone Number', 'PhoneNumber', '1PhoneNumber']);
+    const company = getField(['company', 'company_name', 'Company', 'organization', 'org', 'Company Name', 'Business']);
     const source = getField(['source', 'platform', 'utm_source']) || 'Webhook';
     const source_id = getField(['source_id', 'lead_id', 'zap_id', 'entry_id']) || null;
-    const form_name = getField(['form_name', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName']) || null;
+    const form_name = getField(['form_name', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
 
     // Basic validation: prefer email, fallback to phone
     if (!email && !phone) {
