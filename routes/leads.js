@@ -361,6 +361,17 @@ router.post('/webhook', async (req, res) => {
         'page_id', 'page_name', 'form name', 'ad', 'ad_name'
     ]);
     
+    // Helper function to format question text
+    function formatQuestionText(text) {
+        // Remove "Raw " prefix if present
+        let formatted = text.replace(/^Raw\s+/i, '');
+        
+        // Convert to title case: capitalize first letter of each word
+        formatted = formatted.replace(/\b\w/g, char => char.toUpperCase());
+        
+        return formatted;
+    }
+    
     for (const [key, value] of Object.entries(body)) {
         const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
         
@@ -373,7 +384,7 @@ router.post('/webhook', async (req, res) => {
         if (key.startsWith('Raw') || key.includes('?') || 
             /^(Are|Is|Do|Does|Have|Has|What|Which|When|Where|Why|How)/i.test(key)) {
             form_responses.push({
-                question: key,
+                question: formatQuestionText(key),
                 answer: String(value).trim()
             });
         }
