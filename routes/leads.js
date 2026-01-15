@@ -311,6 +311,11 @@ router.post('/webhook', async (req, res) => {
     }
 
     const body = req.body || {};
+    
+    // DEBUG: Log the raw incoming data
+    console.log('=== WEBHOOK RECEIVED ===');
+    console.log('Body keys:', Object.keys(body));
+    console.log('Full body:', JSON.stringify(body, null, 2));
 
     // Build a normalized key map to handle Zapier keys like "1. Full Name" / "Phone Number"
     const normalizedBody = {};
@@ -318,6 +323,7 @@ router.post('/webhook', async (req, res) => {
         const norm = String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
         normalizedBody[norm] = v;
     }
+    console.log('Normalized keys:', Object.keys(normalizedBody));
 
     // Helper: flexible field extraction supporting many Zapier/form providers
     function getField(candidates = []) {
@@ -337,17 +343,26 @@ router.post('/webhook', async (req, res) => {
     // Extract name parts
     let first_name = getField(['first_name', 'firstname', 'firstName', 'FIRST_NAME', 'given_name', 'givenName']);
     let last_name = getField(['last_name', 'lastname', 'lastName', 'LAST_NAME', 'family_name', 'familyName']);
-    const fullName = getField(['name', 'full_name', 'fullName', 'FULL_NAME', 'contact_name', 'ContactName', 'Full Name']);
+    const fullName = getField(['name', 'full_name', 'fullName', 'FULL_NAME', 'contact_name', 'ContactName', 'Full Name', 'Name']);
+    
+    console.log('Name extraction - first_name:', first_name, 'last_name:', last_name, 'fullName:', fullName);
+    
     if ((!first_name || !last_name) && fullName) {
         const parts = String(fullName).trim().split(/\s+/);
         first_name = first_name || parts[0] || null;
-        last_name = last_name || parts.slice(1).join(' ') || parts[0] || null;
+        last_name = last_name || (parts.length > 1 ? parts.slice(1).join(' ') : null);
+        console.log('After split - first_name:', first_name, 'last_name:', last_name);
     }
 
     // Extract other fields with common fallbacks
     const email = getField(['email', 'email_address', 'emailAddress', 'EMAIL', 'Email', 'Email Address', 'EmailAddress', '1Email']);
     const phone = getField(['phone', 'PHONE', 'phone_number', 'phoneNumber', 'PHONE_NUMBER', 'mobile', 'Mobile', 'Phone Number', 'PhoneNumber', '1PhoneNumber']);
     const company = getField(['company', 'COMPANY', 'company_name', 'Company', 'organization', 'org', 'Company Name', 'Business']);
+    const source = getField(['source', 'SOURCE', 'platform', 'utm_source']) || 'Webhook';
+    const source_id = getField(['source_id', 'SOURCE_ID', 'lead_id', 'LEAD_ID', 'zap_id', 'entry_id']) || null;
+    const form_name = getField(['form_name', 'FORM_NAME', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
+    
+    console.log('Extracted - email:', email, 'phone:', phone, 'form_name:', form_name);
     const source = getField(['source', 'SOURCE', 'platform', 'utm_source']) || 'Webhook';
     const source_id = getField(['source_id', 'SOURCE_ID', 'lead_id', 'LEAD_ID', 'zap_id', 'entry_id']) || null;
     const form_name = getField(['form_name', 'FORM_NAME', 'form', 'form_id', 'formName', 'Ad', 'ad', 'ad_name', 'adName', 'Ad Name', 'Form Name']);
@@ -421,6 +436,13 @@ router.post('/webhook', async (req, res) => {
         const insertFirst = first_name || (fullName ? String(fullName).split(/\s+/)[0] : null);
         const insertLast = last_name || (fullName ? String(fullName).split(/\s+/).slice(1).join(' ') : null);
 
+        console.log('INSERTING LEAD:');
+        console.log('  first_name:', insertFirst);
+        console.log('  last_name:', insertLast);
+        console.log('  email:', email);
+        console.log('  phone:', phone);
+        console.log('  form_responses:', JSON.stringify(form_responses, null, 2));
+
         const result = await db.query(
             `INSERT INTO leads (
                 first_name, last_name, email, phone, company,
@@ -430,7 +452,7 @@ router.post('/webhook', async (req, res) => {
              form_responses.length > 0 ? JSON.stringify(form_responses) : null]
         );
 
-        console.log('Webhook created lead', result.rows[0].lead_id, 'source=', source, 'form=', form_name);
+        console.log('✅ Webhook created lead', result.rows[0].lead_id, 'Name:', insertFirst, insertLast);
         res.status(201).json({ message: 'New Lead created successfully', id: result.rows[0].lead_id });
     } catch (err) {
         console.error('Webhook Error:', err);
