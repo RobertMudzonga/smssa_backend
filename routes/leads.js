@@ -424,7 +424,7 @@ router.post('/webhook', async (req, res) => {
             `INSERT INTO leads (
                 first_name, last_name, email, phone, company,
                 source, source_id, form_id, form_responses, cold_lead_stage, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,101,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING lead_id`,
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,101,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) RETURNING lead_id`,
             [insertFirst, insertLast, email, phone, company, source, source_id, form_name, 
              form_responses.length > 0 ? JSON.stringify(form_responses) : null]
         );
