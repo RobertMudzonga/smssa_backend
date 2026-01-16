@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { createNotification } = require('../lib/notifications');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 
 // --- 1. GET ALL LEADS (List/Kanban View) ---
@@ -201,13 +202,14 @@ router.patch('/:id/assign', async (req, res) => {
         const notificationTitle = 'New Lead Assigned';
         const notificationMessage = `You have been assigned a new lead: ${leadName} from ${lead.company || 'Unknown Company'}`;
 
-        await db.query(
-            `INSERT INTO notifications (
-                employee_id, type, title, message, 
-                related_entity_type, related_entity_id, created_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
-            [employee_id, 'lead_assigned', notificationTitle, notificationMessage, 'lead', id]
-        );
+        await createNotification({
+            employee_id,
+            type: 'lead_assigned',
+            title: notificationTitle,
+            message: notificationMessage,
+            related_entity_type: 'lead',
+            related_entity_id: id
+        });
 
         res.json({
             message: 'Lead assigned successfully',
