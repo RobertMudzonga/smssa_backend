@@ -197,13 +197,16 @@ router.patch('/:id/assign', async (req, res) => {
             [employee_id, id]
         );
 
+        // Use the stored value from DB to avoid any mismatch
+        const assignedEmployeeId = updateResult.rows[0].assigned_employee_id;
+
         // Create notification for the assigned employee
         const leadName = `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || lead.email || 'Unknown Lead';
         const notificationTitle = 'New Lead Assigned';
         const notificationMessage = `You have been assigned a new lead: ${leadName} from ${lead.company || 'Unknown Company'}`;
 
         await createNotification({
-            employee_id,
+            employee_id: assignedEmployeeId,
             type: 'lead_assigned',
             title: notificationTitle,
             message: notificationMessage,
