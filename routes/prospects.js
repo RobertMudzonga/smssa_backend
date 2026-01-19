@@ -154,7 +154,7 @@ router.get('/', async (req, res) => {
       10: 'quote_accepted',
       11: 'engagement_sent',
       12: 'invoice_sent',
-      13: 'payment_date_confirmed'
+      13: 'won'
     };
 
     // Transform data to match frontend expectations. Prefer the human-readable
