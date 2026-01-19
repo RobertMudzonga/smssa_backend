@@ -21,7 +21,10 @@ router.get('/', async (req, res) => {
         const hasProspectStages = psExists.rows[0] && psExists.rows[0].exists;
 
         // Build WHERE clause for filtering
-        const whereConditions = ['(l.converted IS NOT TRUE OR l.converted IS NULL)'];
+        const whereConditions = [
+            '(l.converted IS NOT TRUE OR l.converted IS NULL)',
+            '(l.is_archived IS NOT TRUE OR l.is_archived IS NULL)'
+        ];
         const queryParams = [];
         
         if (assigned_employee_id) {
@@ -274,11 +277,11 @@ router.patch('/:id/lost', async (req, res) => {
         const lostNote = `${existingNotes}\n[${new Date().toISOString()}] MARKED AS LOST: ${reason}`;
 
         const result = await db.query(
-            `UPDATE leads SET notes = $1, converted = FALSE, cold_lead_stage = NULL, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,
+            `UPDATE leads SET notes = $1, converted = FALSE, cold_lead_stage = NULL, is_archived = TRUE, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,
             [lostNote, id]
         );
 
-        res.json({ message: 'Lead marked as lost', lead: result.rows[0] });
+        res.json({ message: 'Lead marked as lost and archived', lead: result.rows[0] });
     } catch (err) {
         console.error('Error marking lead as lost:', err);
         res.status(500).json({ error: 'Failed to mark lead as lost' });
