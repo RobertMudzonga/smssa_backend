@@ -376,16 +376,22 @@ router.post('/webhook', async (req, res) => {
     // Look for fields that start with "Raw" or other question patterns
     const form_responses = [];
     const excludedFields = new Set([
-        'first_name', 'firstname', 'last_name', 'lastname', 'email', 'phone', 
-        'company', 'source', 'form_name', 'form_id', 'source_id',
-        'page_id', 'page_name', 'form name', 'ad', 'ad_name'
-    ]);
+        'first_name', 'firstname', 'last_name', 'lastname', 'email', 'phone',
+        'company', 'source', 'form_name', 'form_id', 'source_id', 'lead_id',
+        'page_id', 'page_name', 'form name', 'ad', 'ad_name', 'adname', 'campaign_id'
+    ].map(k => String(k).toLowerCase().replace(/[^a-z0-9]/g, '')));
     
     // Helper function to format question text
     function formatQuestionText(text) {
-        // Remove "Raw " prefix if present
-        let formatted = text.replace(/^Raw\s+/i, '');
-        
+        // Strip provider prefixes and any leading numbering like "1." or "01)"
+        let formatted = text
+            .replace(/^Raw\s+/i, '')
+            .replace(/^\d+\s*[.)-]?\s*/, '')
+            .trim();
+
+        // Convert separators to spaces for nicer display
+        formatted = formatted.replace(/[._]+/g, ' ');
+
         // Convert to title case: capitalize first letter of each word
         formatted = formatted.replace(/\b\w/g, char => char.toUpperCase());
         
@@ -401,14 +407,32 @@ router.post('/webhook', async (req, res) => {
         }
         
         // Include fields that look like questions (Raw prefix, contain question words, or name fields)
-        const isNameField = /name/i.test(key) && !excludedFields.has(normalizedKey);
-        if (key.startsWith('Raw') || key.includes('?') || isNameField ||
-            /^(Are|Is|Do|Does|Have|Has|What|Which|When|Where|Why|How)/i.test(key)) {
+        const trimmedKey = String(key).trim();
+        const baseQuestion = trimmedKey
+            .replace(/^Raw\s+/i, '')
+            .replace(/^\d+\s*[.)-]?\s*/, '')
+            .trim();
+
+        const isNameField = /name/i.test(baseQuestion) && !excludedFields.has(normalizedKey);
+        const looksLikeQuestion =
+            trimmedKey.startsWith('Raw') ||
+            trimmedKey.includes('?') ||
+            /^(Are|Is|Do|Does|Have|Has|What|Which|When|Where|Why|How)/i.test(baseQuestion);
+
+        // Include explicit questions or name fields
+        if (looksLikeQuestion || isNameField) {
             form_responses.push({
-                question: formatQuestionText(key),
+                question: formatQuestionText(baseQuestion || key),
                 answer: String(value).trim()
             });
+            continue;
         }
+
+        // Fallback: capture any other non-system fields (e.g., "Job Offer", "Annual Salary")
+        form_responses.push({
+            question: formatQuestionText(baseQuestion || key),
+            answer: String(value).trim()
+        });
     }
 
     // Basic validation: prefer email, fallback to phone
