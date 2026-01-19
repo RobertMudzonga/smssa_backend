@@ -36,6 +36,25 @@ router.patch('/:id/stage', async (req, res) => {
         const prospectRow = await db.query('SELECT * FROM prospects WHERE prospect_id = $1', [id]);
         const prospect = prospectRow.rows[0];
 
+        // Update employee metrics for the assigned salesperson
+        if (prospect.assigned_to) {
+          try {
+            const revenueAmount = prospect.forecast_amount || 0;
+            await db.query(
+              `UPDATE employees 
+               SET conversions_count = conversions_count + 1,
+                   total_revenue = total_revenue + $1,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = $2`,
+              [revenueAmount, prospect.assigned_to]
+            );
+            console.log(`Updated employee ${prospect.assigned_to} metrics: +1 conversion, +${revenueAmount} revenue`);
+          } catch (errMetrics) {
+            console.error('Error updating employee metrics:', errMetrics);
+            // Don't fail the stage update because of metrics update
+          }
+        }
+
         // Use lead_id if available to link project; otherwise allow NULL
         const clientLeadId = prospect.lead_id || null;
         const assignedUserId = prospect.assigned_to || null;

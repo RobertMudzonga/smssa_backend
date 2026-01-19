@@ -7,30 +7,28 @@ router.get('/', async (req, res) => {
   try {
     const q = `
       SELECT e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at,
+             e.conversions_count, e.total_revenue,
              array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
       FROM employees e
       LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
-      GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at
+      GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at, e.conversions_count, e.total_revenue
       ORDER BY e.full_name
     `;
     const { rows } = await db.query(q);
     
-    // Fetch metrics for each employee (projects and conversions)
+    // Fetch additional metrics for each employee (projects count)
     const employeesWithMetrics = await Promise.all(rows.map(async (emp) => {
       // Count projects where employee is project manager
       const projectsQuery = `SELECT COUNT(*) as count FROM projects WHERE project_manager_id = $1`;
       const projectsResult = await db.query(projectsQuery, [emp.id]).catch(() => ({ rows: [{ count: '0' }] }));
       const projects_count = parseInt(projectsResult.rows[0]?.count || '0');
       
-      // Count prospects converted (stage 13 = won/converted)
-      const conversionsQuery = `SELECT COUNT(*) as count FROM prospects WHERE assigned_to = $1 AND stage_id = 13`;
-      const conversionsResult = await db.query(conversionsQuery, [emp.id]).catch(() => ({ rows: [{ count: '0' }] }));
-      const conversions_count = parseInt(conversionsResult.rows[0]?.count || '0');
-      
       return {
         ...emp,
         projects_count,
-        conversions_count
+        // conversions_count and total_revenue now come from the employees table
+        conversions_count: parseInt(emp.conversions_count || 0),
+        total_revenue: parseFloat(emp.total_revenue || 0)
       };
     }));
     
