@@ -385,6 +385,7 @@ router.get('/by-lead/:leadId', async (req, res) => {
 
 // GET /api/projects - list projects (brief)
 router.get('/', async (req, res) => {
+    const { search } = req.query;
     try {
         // If the projects table doesn't exist, return an empty list instead of 500.
         const existsRes = await db.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='projects') as exists");
@@ -452,13 +453,41 @@ router.get('/', async (req, res) => {
             + (leadSelect ? ', ' + leadSelect : '')
             + (managerSelect ? ', ' + managerSelect : '');
 
+        let whereClause = '';
+        const params = [];
+        
+        // Add search filter if provided
+        if (search && typeof search === 'string' && search.trim()) {
+            const searchTerm = `%${search.trim().toLowerCase()}%`;
+            const searchConditions = [];
+            
+            if (cols.includes('project_name')) searchConditions.push('LOWER(p.project_name) LIKE $1');
+            if (cols.includes('client_name')) searchConditions.push('LOWER(p.client_name) LIKE $1');
+            if (cols.includes('client_email')) searchConditions.push('LOWER(p.client_email) LIKE $1');
+            if (cols.includes('case_type')) searchConditions.push('LOWER(p.case_type) LIKE $1');
+            if (joinLead) {
+                searchConditions.push('LOWER(l.first_name) LIKE $1');
+                searchConditions.push('LOWER(l.last_name) LIKE $1');
+                searchConditions.push('LOWER(l.company) LIKE $1');
+            }
+            if (joinManager) {
+                searchConditions.push('LOWER(e.full_name) LIKE $1');
+            }
+            
+            if (searchConditions.length > 0) {
+                whereClause = ` WHERE (${searchConditions.join(' OR ')})`;
+                params.push(searchTerm);
+            }
+        }
+
         const sql = `SELECT ${selectList}
                  FROM projects p
                  ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
                  ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
+                 ${whereClause}
                  ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_name'} DESC`;
 
-        const result = await db.query(sql);
+        const result = await db.query(sql, params);
 
         // Map rows to include sensible fallbacks for the frontend
         const rows = result.rows.map(r => ({

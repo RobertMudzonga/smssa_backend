@@ -127,17 +127,38 @@ router.patch('/:id/stage', async (req, res) => {
 // GET /api/prospects - list prospects
 router.get('/', async (req, res) => {
   console.log('=== GET /api/prospects called ===');
+  const { search } = req.query;
   try {
     console.log('Attempting to query database...');
-    const result = await db.query(`
+    
+    let query = `
       SELECT 
         p.*,
         ps.name as stage_name
       FROM prospects p
       LEFT JOIN prospect_stages ps ON p.current_stage_id = ps.stage_id
-      WHERE p.is_archived = FALSE OR p.is_archived IS NULL
-      ORDER BY p.created_at DESC
-    `);
+      WHERE (p.is_archived = FALSE OR p.is_archived IS NULL)
+    `;
+    
+    const params = [];
+    
+    // Add search filter if provided
+    if (search && typeof search === 'string' && search.trim()) {
+      const searchTerm = `%${search.trim().toLowerCase()}%`;
+      query += ` AND (
+        LOWER(p.first_name) LIKE $1 OR 
+        LOWER(p.last_name) LIKE $1 OR 
+        LOWER(p.deal_name) LIKE $1 OR 
+        LOWER(p.company) LIKE $1 OR 
+        LOWER(p.email) LIKE $1 OR 
+        LOWER(p.source) LIKE $1
+      )`;
+      params.push(searchTerm);
+    }
+    
+    query += ` ORDER BY p.created_at DESC`;
+    
+    const result = await db.query(query, params);
     console.log(`Query successful, found ${result.rows.length} rows`);
     
     // Map stage IDs to frontend stage keys (fallback)
