@@ -116,7 +116,7 @@ router.get('/balance/me', async (req, res) => {
     
     // Look up employee by email
     const employeeResult = await db.query(
-      `SELECT id FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
+      `SELECT id FROM employees WHERE work_email = $1 LIMIT 1`,
       [email]
     );
     
@@ -203,7 +203,7 @@ router.post('/', async (req, res) => {
     
     try {
       const employeeResult = await db.query(
-        `SELECT id, full_name, department, manager_id FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
+        `SELECT id, full_name, department, manager_id FROM employees WHERE work_email = $1 LIMIT 1`,
         [createdBy]
       );
       
