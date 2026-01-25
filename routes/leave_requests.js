@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { notifyManagers } = require('../lib/notifications');
+const leaveBalance = require('../lib/leaveBalance');
 
 // Create leave request table if it doesn't exist
 router.use(async (req, res, next) => {
@@ -49,6 +50,49 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error('Error fetching leave requests:', err);
     res.status(500).json({ error: 'Failed to fetch leave requests' });
+  }
+});
+
+// Get leave balance for current employee
+router.get('/balance/me', async (req, res) => {
+  try {
+    const email = req.headers['x-user-email'] || 'system';
+    
+    // Look up employee by email
+    const employeeResult = await db.query(
+      `SELECT id FROM employees WHERE work_email = $1 OR personal_email = $1 LIMIT 1`,
+      [email]
+    );
+    
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    
+    const employeeId = employeeResult.rows[0].id;
+    const year = new Date().getFullYear();
+    
+    // Get or create leave balance
+    const balanceSummary = await leaveBalance.getLeaveBalanceSummary(employeeId, year);
+    
+    res.json(balanceSummary);
+  } catch (err) {
+    console.error('Error fetching leave balance:', err);
+    res.status(500).json({ error: 'Failed to fetch leave balance' });
+  }
+});
+
+// Get leave balance for specific employee
+router.get('/balance/:employeeId', async (req, res) => {
+  try {
+    const { employeeId } = req.params;
+    const year = new Date().getFullYear();
+    
+    const balanceSummary = await leaveBalance.getLeaveBalanceSummary(employeeId, year);
+    
+    res.json(balanceSummary);
+  } catch (err) {
+    console.error('Error fetching leave balance:', err);
+    res.status(500).json({ error: 'Failed to fetch leave balance' });
   }
 });
 
@@ -103,27 +147,74 @@ router.post('/', async (req, res) => {
       // Continue without employee info
     }
 
+    // Calculate number of days requested (including both start and end dates)
+    const daysRequested = Math.ceil((new Date(end_date) - new Date(start_date)) / (1000 * 60 * 60 * 24)) + 1;
+    
+    // Calculate paid and unpaid days based on leave balance
+    let daysPaid = daysRequested;
+    let daysUnpaid = 0;
+    let isFullyPaid = true;
+    
+    // Only calculate paid/unpaid for annual leave requests
+    if (leave_type === 'annual' && employeeId) {
+      try {
+        const year = new Date().getFullYear();
+        
+        // Get or create leave balance for this employee
+        const balance = await leaveBalance.getLeaveBalance(employeeId, year);
+        const accruedDays = leaveBalance.calculateAccruedLeaveDays(new Date());
+        const daysAvailable = accruedDays - (balance.days_used || 0);
+        
+        // Calculate split between paid and unpaid
+        if (daysAvailable >= daysRequested) {
+          daysPaid = daysRequested;
+          daysUnpaid = 0;
+          isFullyPaid = true;
+        } else if (daysAvailable > 0) {
+          daysPaid = Math.round(daysAvailable * 100) / 100;
+          daysUnpaid = daysRequested - daysPaid;
+          isFullyPaid = false;
+        } else {
+          daysPaid = 0;
+          daysUnpaid = daysRequested;
+          isFullyPaid = false;
+        }
+      } catch (balanceErr) {
+        console.warn('Could not calculate leave balance:', balanceErr);
+        // Default to fully paid if balance calculation fails
+        daysPaid = daysRequested;
+        daysUnpaid = 0;
+        isFullyPaid = true;
+      }
+    }
+
     const result = await db.query(
-      `INSERT INTO leave_requests (employee_id, employee_name, leave_type, start_date, end_date, reason, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+      `INSERT INTO leave_requests (
+        employee_id, employee_name, leave_type, start_date, end_date, reason, 
+        status, created_by, days_requested, days_paid, days_unpaid, is_fully_paid
+      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11)
        RETURNING *`,
-      [employeeId, employeeName || createdBy, leave_type, start_date, end_date, reason || '', createdBy]
+      [
+        employeeId, employeeName || createdBy, leave_type, start_date, end_date, reason || '', 
+        createdBy, daysRequested, daysPaid, daysUnpaid, isFullyPaid
+      ]
     );
     
     const leaveRequest = result.rows[0];
 
-    // Notify all managers about the new leave request
+    // Notify all managers about the new leave request with balance info
     try {
       const startFormatted = new Date(start_date).toLocaleDateString();
       const endFormatted = new Date(end_date).toLocaleDateString();
-      const duration = Math.ceil((new Date(end_date) - new Date(start_date)) / (1000 * 60 * 60 * 24)) + 1;
-      const durationText = duration > 1 ? ` (${duration} days)` : ' (1 day)';
+      const durationText = daysRequested > 1 ? ` (${daysRequested} days)` : ' (1 day)';
       const reasonText = reason ? ` Reason: ${reason}` : '';
+      const balanceText = daysPaid < daysRequested ? 
+        ` [${daysPaid} paid + ${daysUnpaid} unpaid]` : '';
       
       await notifyManagers({
         type: 'leave_request',
         title: `Leave Request: ${employeeName || createdBy}`,
-        message: `${employeeName || createdBy} requested ${leave_type} leave from ${startFormatted} to ${endFormatted}${durationText}.${reasonText}`,
+        message: `${employeeName || createdBy} requested ${leave_type} leave from ${startFormatted} to ${endFormatted}${durationText}${balanceText}.${reasonText}`,
         related_entity_type: 'leave_request',
         related_entity_id: leaveRequest.id
       });
@@ -162,6 +253,34 @@ router.patch('/:id', async (req, res) => {
     }
 
     const leaveRequest = leaveRequestResult.rows[0];
+    const year = new Date(leaveRequest.start_date).getFullYear();
+
+    // Deduct or restore leave days based on status change
+    if (status === 'approved' && leaveRequest.status !== 'approved' && leaveRequest.employee_id) {
+      try {
+        // Deduct paid days from the balance
+        const daysPaid = parseFloat(leaveRequest.days_paid) || 0;
+        if (daysPaid > 0) {
+          await leaveBalance.deductLeaveDays(leaveRequest.employee_id, daysPaid, year);
+        }
+        console.log(`Deducted ${daysPaid} days from employee ${leaveRequest.employee_id}`);
+      } catch (balanceErr) {
+        console.warn('Could not update leave balance on approval:', balanceErr);
+        // Continue anyway - don't fail the approval
+      }
+    } else if (status !== 'approved' && leaveRequest.status === 'approved' && leaveRequest.employee_id) {
+      try {
+        // Restore paid days if approval is being revoked
+        const daysPaid = parseFloat(leaveRequest.days_paid) || 0;
+        if (daysPaid > 0) {
+          await leaveBalance.restoreLeaveDays(leaveRequest.employee_id, daysPaid, year);
+        }
+        console.log(`Restored ${daysPaid} days for employee ${leaveRequest.employee_id}`);
+      } catch (balanceErr) {
+        console.warn('Could not restore leave balance on revocation:', balanceErr);
+        // Continue anyway - don't fail the status update
+      }
+    }
 
     const result = await db.query(
       `UPDATE leave_requests 
@@ -182,6 +301,8 @@ router.patch('/:id', async (req, res) => {
         const employeeId = employeeResult.rows[0].id;
         const statusMessage = status === 'approved' ? 'approved' : 'rejected';
         const actionWord = status === 'approved' ? 'Approved' : 'Rejected';
+        const balanceText = status === 'approved' && leaveRequest.days_unpaid > 0 ? 
+          ` (${leaveRequest.days_paid} paid, ${leaveRequest.days_unpaid} unpaid)` : '';
 
         await db.query(
           `INSERT INTO notifications (
@@ -192,7 +313,7 @@ router.patch('/:id', async (req, res) => {
             employeeId,
             'leave_request',
             `Leave Request ${actionWord}`,
-            `Your ${leaveRequest.leave_type} leave request has been ${statusMessage}. ${comments ? 'Comments: ' + comments : ''}`,
+            `Your ${leaveRequest.leave_type} leave request has been ${statusMessage}${balanceText}. ${comments ? 'Comments: ' + comments : ''}`,
             'leave_request',
             id
           ]
