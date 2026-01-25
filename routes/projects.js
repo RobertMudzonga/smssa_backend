@@ -6,7 +6,7 @@ const { notifyManagers, createNotification } = require('../lib/notifications');
 // --- 1. CREATE PROJECT ---
 // Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
 router.post('/', async (req, res) => {
-    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_name, client_name, client_email, case_type, priority, start_date, payment_amount } = req.body;
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount } = req.body;
     
     // Start transaction
     const client = await db.pool.connect();
@@ -106,6 +106,12 @@ router.post('/', async (req, res) => {
         if (cols.includes('project_manager_id') && project_manager_id) { 
             insertCols.push('project_manager_id'); 
             values.push(project_manager_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('project_manager_id_2') && project_manager_id_2) { 
+            insertCols.push('project_manager_id_2'); 
+            values.push(project_manager_id_2); 
             placeholders.push(`$${idx++}`); 
         }
 
@@ -226,6 +232,11 @@ router.get('/:id', async (req, res) => {
             selectFields += ', e.full_name as project_manager_name, e.work_email as project_manager_email';
         }
 
+        if (hasEmployeesTable && cols.includes('project_manager_id_2')) {
+            joins += ' LEFT JOIN employees e2 ON p.project_manager_id_2 = e2.id';
+            selectFields += ', e2.full_name as project_manager_2_name, e2.work_email as project_manager_2_email';
+        }
+
         // Query by project_name (id parameter could be project name or project_id)
         // First try to find by project_name, then fall back to project_id if numeric
         let projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.project_name = $1`;
@@ -322,7 +333,7 @@ router.patch('/:id', async (req, res) => {
         }
 
         // Allowed editable fields
-        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id'];
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2'];
         const parts = [];
         const values = [];
         let i = 1;
@@ -358,6 +369,26 @@ router.patch('/:id', async (req, res) => {
                     related_entity_id: currentProject.project_id
                 });
                 console.log(`Notified employee ${updates.project_manager_id} about project manager assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
+        // Notify if second project manager was changed
+        if (updates.project_manager_id_2 && currentProject && updates.project_manager_id_2 !== currentProject.project_manager_id_2) {
+            try {
+                const projectIdentifier = updates.project_name || currentProject.project_name || `Project #${currentProject.project_id}`;
+                const clientInfo = currentProject.client_name ? ` for client ${currentProject.client_name}` : '';
+                const caseInfo = currentProject.case_type ? ` (${currentProject.case_type})` : '';
+                await createNotification({
+                    employee_id: updates.project_manager_id_2,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned as Manager',
+                    message: `You have been assigned as project manager for: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: currentProject.project_id
+                });
+                console.log(`Notified employee ${updates.project_manager_id_2} about project manager assignment`);
             } catch (notifErr) {
                 console.error('Error creating project assignment notification:', notifErr);
             }
@@ -415,6 +446,7 @@ router.get('/', async (req, res) => {
         add('payment_amount');
         add('created_at');
         add('project_manager_id');
+        add('project_manager_id_2');
         add('current_stage');
 
         // Always include lead names when available, but only join if the `leads` table exists
@@ -448,10 +480,26 @@ router.get('/', async (req, res) => {
             }
         }
 
+        let joinManager2 = cols.includes('project_manager_id_2');
+        if (joinManager2) {
+            try {
+                const employeeTable = await db.query("SELECT to_regclass('public.employees') as exists");
+                if (!employeeTable.rows[0] || !employeeTable.rows[0].exists) {
+                    console.warn('Employees table not present; skipping project manager 2 join in projects list');
+                    joinManager2 = false;
+                }
+            } catch (e) {
+                console.warn('Error checking employees table existence for manager 2, skipping join:', e && e.message ? e.message : e);
+                joinManager2 = false;
+            }
+        }
+
         const managerSelect = joinManager ? 'e.full_name as project_manager_name, e.work_email as project_manager_email' : '';
+        const manager2Select = joinManager2 ? 'e2.full_name as project_manager_2_name, e2.work_email as project_manager_2_email' : '';
         const selectList = (selectCols.join(', ') || 'p.project_id as project_id')
             + (leadSelect ? ', ' + leadSelect : '')
-            + (managerSelect ? ', ' + managerSelect : '');
+            + (managerSelect ? ', ' + managerSelect : '')
+            + (manager2Select ? ', ' + manager2Select : '');
 
         let whereClause = '';
         const params = [];
@@ -484,6 +532,7 @@ router.get('/', async (req, res) => {
                  FROM projects p
                  ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
                  ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
+                 ${joinManager2 ? 'LEFT JOIN employees e2 ON p.project_manager_id_2 = e2.id' : ''}
                  ${whereClause}
                  ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_name'} DESC`;
 
