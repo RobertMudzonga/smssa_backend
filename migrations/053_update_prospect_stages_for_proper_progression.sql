@@ -2,10 +2,8 @@
 -- Fixes issue where prospects jump from Month-End Follow-up (stage 7) directly to Won
 -- This ensures proper progression through all 14 stages
 
--- First, clear the old data
-DELETE FROM prospect_stages WHERE stage_id BETWEEN 1 AND 14;
-
--- Insert the correct 14 prospect stages
+-- Insert or update the correct 14 prospect stages
+-- Using ON CONFLICT to update existing records without violating foreign keys
 INSERT INTO prospect_stages (stage_id, name, display_order, description) VALUES
 (1, 'Opportunity', 1, 'Initial opportunity identified'),
 (2, 'Quote Requested', 2, 'Quote has been requested by prospect'),
@@ -26,7 +24,8 @@ ON CONFLICT (stage_id) DO UPDATE SET
   display_order = EXCLUDED.display_order,
   description = EXCLUDED.description;
 
--- Ensure any prospect with stage_id > 14 is reset to the appropriate stage
--- (This shouldn't happen, but good for data integrity)
+-- Ensure any prospect with stage_id > 14 is reset to stage 14
 UPDATE prospects SET current_stage_id = 14 WHERE current_stage_id > 14;
+
+-- Ensure no prospects have NULL or invalid stage_id (defaults to 1 = Opportunity)
 UPDATE prospects SET current_stage_id = 1 WHERE current_stage_id IS NULL OR current_stage_id <= 0;
