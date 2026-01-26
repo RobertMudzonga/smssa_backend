@@ -9,7 +9,7 @@ console.log('Loaded routes/prospects.js');
 router.patch('/:id/stage', async (req, res) => {
   const { id } = req.params;
   const { stage_id } = req.body;
-  const allowedStageIDs = Array.from({ length: 13 }, (_, i) => i + 1);
+  const allowedStageIDs = Array.from({ length: 14 }, (_, i) => i + 1);
 
   if (!stage_id || !allowedStageIDs.includes(stage_id)) {
     return res.status(400).json({ error: 'Invalid stage_id provided.' });
@@ -175,7 +175,8 @@ router.get('/', async (req, res) => {
       10: 'quote_accepted',
       11: 'engagement_sent',
       12: 'invoice_sent',
-      13: 'won'
+      13: 'payment_date_confirmed',
+      14: 'won'
     };
 
     // Transform data to match frontend expectations. Prefer the human-readable
@@ -361,7 +362,7 @@ router.post('/', async (req, res) => {
 
       // transform response to frontend shape
       const p = result.rows[0];
-      const stageMapping = {1:'opportunity',2:'quote_requested',3:'quote_sent',4:'first_follow_up',5:'second_follow_up',6:'mid_month_follow_up',7:'month_end_follow_up',8:'next_month_follow_up',9:'discount_requested',10:'quote_accepted',11:'engagement_sent',12:'invoice_sent'};
+      const stageMapping = {1:'opportunity',2:'quote_requested',3:'quote_sent',4:'first_follow_up',5:'second_follow_up',6:'mid_month_follow_up',7:'month_end_follow_up',8:'next_month_follow_up',9:'discount_requested',10:'quote_accepted',11:'engagement_sent',12:'invoice_sent',13:'payment_date_confirmed',14:'won'};
       const transformed = {
         ...p,
         id: p.prospect_id,
