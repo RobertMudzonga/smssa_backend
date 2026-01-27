@@ -7,7 +7,7 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 // --- 1. GET ALL LEADS (List/Kanban View) ---
 router.get('/', async (req, res) => {
     try {
-        const { assigned_employee_id } = req.query;
+        const { assigned_employee_id, search } = req.query;
         
         // First check if leads table exists
         const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
@@ -34,6 +34,19 @@ router.get('/', async (req, res) => {
                 queryParams.push(assigned_employee_id);
                 whereConditions.push(`l.assigned_employee_id = $${queryParams.length}`);
             }
+        }
+        
+        // Add search filter if provided
+        if (search && typeof search === 'string' && search.trim()) {
+            const searchTerm = `%${search.trim().toLowerCase()}%`;
+            queryParams.push(searchTerm);
+            whereConditions.push(`(
+                LOWER(l.first_name) LIKE $${queryParams.length} OR 
+                LOWER(l.last_name) LIKE $${queryParams.length} OR 
+                LOWER(l.company) LIKE $${queryParams.length} OR 
+                LOWER(l.email) LIKE $${queryParams.length} OR 
+                LOWER(l.phone) LIKE $${queryParams.length}
+            )`);
         }
         
         const whereClause = whereConditions.join(' AND ');

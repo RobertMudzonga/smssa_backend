@@ -10,6 +10,7 @@
     "import-excel": "node scripts/import_excel.js"
   },
   "dependencies": {
+    "archiver": "^7.0.1",
     "aws-sdk": "^2.1693.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
