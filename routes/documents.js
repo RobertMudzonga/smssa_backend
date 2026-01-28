@@ -32,17 +32,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       });
     }
 
-    // Allow client portal uploads if token is valid, otherwise restrict to admin emails
+    // Allow all users to upload documents (including client portal)
     const isClientPortal = req.body.client_portal_token !== undefined;
     const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
-    
-    if (!isClientPortal) {
-      const allowedEmails = new Set(['munya@immigrationspecialists.co.za', 'robert@immigrationspecialists.co.za']);
-      if (!uploaded_by || !allowedEmails.has(String(uploaded_by).toLowerCase())) {
-        console.warn('Unauthorized upload attempt', { uploaded_by, ip: req.ip, path: req.originalUrl });
-        return res.status(403).json({ error: 'Uploads are disabled for your account' });
-      }
-    }
 
     const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null } = req.body;
     const file = req.file;
