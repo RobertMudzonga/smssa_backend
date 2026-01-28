@@ -360,18 +360,34 @@ router.post('/:id/new-version', upload.single('file'), async (req, res) => {
   }
 });
 
-// DELETE /api/documents/:id - soft delete a document (mark as inactive)
+// DELETE /api/documents/:id - delete a document and all its versions
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   
   try {
-    const result = await db.query(
-      'UPDATE documents SET is_latest_version = false WHERE document_id = $1 RETURNING document_id',
+    // First, find the parent document ID if this is a version
+    const docRes = await db.query(
+      'SELECT parent_document_id FROM documents WHERE document_id = $1',
       [id]
     );
     
-    if (result.rows.length === 0) {
+    if (docRes.rows.length === 0) {
       return res.status(404).json({ error: 'Document not found' });
+    }
+    
+    const parentId = docRes.rows[0].parent_document_id;
+    
+    // If this is a version (has parent), delete just this version
+    // If this is a parent, delete the document and all its versions
+    if (parentId) {
+      // Delete just this version
+      await db.query('DELETE FROM documents WHERE document_id = $1', [id]);
+    } else {
+      // Delete the document and all its versions
+      await db.query(
+        'DELETE FROM documents WHERE document_id = $1 OR parent_document_id = $1',
+        [id]
+      );
     }
     
     res.json({ message: 'Document deleted successfully', document_id: id });
