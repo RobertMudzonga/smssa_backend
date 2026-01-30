@@ -1,6 +1,6 @@
 -- Enhance leave_balances table to better track leave accrual and reset dates
 -- This migration improves the tracking of leave balance per employee per year
--- Rule: 1.5 days on Jan 1, 18 days by Dec 31 (0.0452 days per calendar day)
+-- Milestones: 1.5 days by Jan 31, 3 days by Feb 28, 18 days by Dec 31
 
 -- Add new columns to track earned days, reset date, and month-based accrual
 ALTER TABLE leave_balances 
@@ -14,29 +14,41 @@ SET reset_date = DATE_TRUNC('year', CURRENT_DATE)::DATE
 WHERE reset_date IS NULL;
 
 -- Add a function to calculate leave days accrued by the current date
--- Base: 1.5 days at start of year (Jan 1)
--- Rate: 16.5 days accrued over 365 days = 0.0452 per day
--- Max: 18 days by end of year (Dec 31)
+-- Stepped accrual:
+-- - Jan 1-31: 1.5 days
+-- - Feb 1-28: 1.5 to 3 days (0.0536 per day)
+-- - Mar 1-Dec 31: 3 to 18 days (0.0492 per day)
 CREATE OR REPLACE FUNCTION get_accrued_leave_for_date(employee_id INTEGER, check_date DATE)
 RETURNS DECIMAL(5,2) AS $$
 DECLARE
   year_start DATE;
-  days_elapsed INTEGER;
+  february_end DATE;
+  march_start DATE;
+  days_in_february INTEGER;
+  days_in_march_onwards INTEGER;
   accrued DECIMAL(5,2);
-  base_days DECIMAL(5,2) := 1.5;
-  daily_rate DECIMAL(5,2) := 0.0452; -- 16.5 days over 365 days
 BEGIN
-  -- Get the start of the year
+  -- Get the dates
   year_start := DATE_TRUNC('year', check_date)::DATE;
+  february_end := (year_start + INTERVAL '1 month' + INTERVAL '27 days')::DATE;
+  march_start := (year_start + INTERVAL '2 months')::DATE;
   
-  -- Calculate days elapsed in the year
-  days_elapsed := check_date - year_start;
+  -- Start with base 1.5 days
+  accrued := 1.5;
   
-  -- Calculate accrued days: 1.5 base + (0.0452 * days_elapsed)
-  -- Capped at 18 days maximum
-  accrued := LEAST(base_days + (daily_rate * days_elapsed), 18.00);
+  -- If past Feb 28, accrue from 3 to 18 days over Mar 1 to Dec 31
+  IF check_date > february_end THEN
+    days_in_march_onwards := check_date - march_start;
+    -- 305 days to accrue 15 days = 0.0492 per day
+    accrued := LEAST(3.0 + (days_in_march_onwards * 0.0492), 18.00);
+  -- If in February, accrue from 1.5 to 3 days
+  ELSIF check_date > (year_start + INTERVAL '30 days')::DATE THEN
+    days_in_february := check_date - (year_start + INTERVAL '31 days')::DATE;
+    -- 28 days to accrue 1.5 days = 0.0536 per day
+    accrued := LEAST(1.5 + (days_in_february * 0.0536), 3.00);
+  END IF;
   
-  RETURN ROUND(accrued::NUMERIC, 2);
+  RETURN ROUND(accrued, 2);
 END;
 $$ LANGUAGE plpgsql;
 

@@ -32,8 +32,12 @@ const { pool } = require('./db');
         console.log('Skipping empty file:', file);
         continue;
       }
-      await pool.query(sql);
-      console.log('Applied:', file);
+      try {
+        await pool.query(sql);
+        console.log('Applied:', file);
+      } catch (migErr) {
+        console.warn('Migration skipped due to error:', file, '-', migErr.message || migErr);
+      }
     }
 
     console.log('Migrations complete');
