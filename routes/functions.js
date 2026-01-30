@@ -71,19 +71,51 @@ router.post('/apply-database-migrations', async (req, res) => {
 router.post('/fetch-analytics-data', async (req, res) => {
   try {
     const { startDate, endDate } = req.body || {};
-    // Attempt to gather some basic analytics from DB; fall back to empty structure
+    // Gather analytics from DB; separate project and prospect revenue
     const data = {
       totalRevenue: 0,
+      projectsRevenue: 0,
+      projectsRevenueReceived: 0,
+      prospectsRevenue: 0,
       completionRates: { completed: 0, total: 0 },
       clientAcquisition: { converted: 0, total: 0 },
       revenueByVisa: [],
-      employeePerformance: []
+      employeePerformance: [],
+      projectPaymentStatus: { pending: 0, partiallyPaid: 0, fullyPaid: 0 }
     };
 
     try {
-      const r = await db.query("SELECT COALESCE(SUM(payment_amount),0) AS total FROM projects WHERE payment_amount IS NOT NULL");
-      data.totalRevenue = Number(r.rows?.[0]?.total || 0);
-    } catch (e) { console.warn('analytics revenue query failed', e.message || e); }
+      // Get total project quote amount (payment_amount)
+      const projectsQuote = await db.query("SELECT COALESCE(SUM(payment_amount),0) AS total FROM projects WHERE payment_amount IS NOT NULL");
+      data.projectsRevenue = Number(projectsQuote.rows?.[0]?.total || 0);
+    } catch (e) { console.warn('projects quote revenue query failed', e.message || e); }
+
+    try {
+      // Get total project payment received (already paid)
+      const projectsReceived = await db.query("SELECT COALESCE(SUM(payment_received),0) AS total FROM projects WHERE payment_received IS NOT NULL AND payment_received > 0");
+      data.projectsRevenueReceived = Number(projectsReceived.rows?.[0]?.total || 0);
+    } catch (e) { console.warn('projects payment received query failed', e.message || e); }
+
+    try {
+      // Get project payment status distribution
+      const paymentStatus = await db.query("SELECT payment_status, COUNT(*) as count FROM projects GROUP BY payment_status");
+      if (paymentStatus.rows && paymentStatus.rows.length > 0) {
+        paymentStatus.rows.forEach(row => {
+          if (row.payment_status === 'pending') data.projectPaymentStatus.pending = Number(row.count);
+          else if (row.payment_status === 'partially_paid') data.projectPaymentStatus.partiallyPaid = Number(row.count);
+          else if (row.payment_status === 'fully_paid') data.projectPaymentStatus.fullyPaid = Number(row.count);
+        });
+      }
+    } catch (e) { console.warn('project payment status query failed', e.message || e); }
+
+    try {
+      // Get prospect revenue (won deals) - this would be from a prospects table if it tracks revenue
+      const prospectsRevenue = await db.query("SELECT COALESCE(SUM(CAST(forecast_amount AS NUMERIC)),0) AS total FROM prospects WHERE current_stage_id = 14 OR status = 'won'");
+      data.prospectsRevenue = Number(prospectsRevenue.rows?.[0]?.total || 0);
+    } catch (e) { console.warn('prospects revenue query failed', e.message || e); }
+
+    // Total revenue is now separate: projects received + prospects won
+    data.totalRevenue = data.projectsRevenueReceived + data.prospectsRevenue;
 
     return res.json({ ok: true, data });
   } catch (err) {

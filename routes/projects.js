@@ -1068,8 +1068,6 @@ router.post('/create', async (req, res) => {
     }
 });
 
-module.exports = router;
-
 // --- 7. PROJECT REVIEWS (INTERNAL) ---
 // List reviews for a project
 router.get('/:id/reviews', async (req, res) => {
@@ -1169,3 +1167,179 @@ router.post('/:id/reviews', async (req, res) => {
         return res.status(500).json({ ok: false, error: 'Server error' });
     }
 });
+
+// --- 8. PROJECT PAYMENT TRACKING ---
+// Record payment received for a project
+// PUT /api/projects/:id/payment
+router.put('/:id/payment', async (req, res) => {
+    const { id } = req.params;
+    const { amount_received, payment_date, notes } = req.body || {};
+
+    if (!amount_received || Number(amount_received) <= 0) {
+        return res.status(400).json({ error: 'Invalid amount received' });
+    }
+
+    try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+
+        // Get current project to validate and calculate new balance
+        const projectResult = await db.query(
+            'SELECT * FROM projects WHERE project_id = $1',
+            [projectId]
+        );
+
+        if (projectResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const project = projectResult.rows[0];
+        const currentPaymentReceived = Number(project.payment_received || 0);
+        const newPaymentReceived = currentPaymentReceived + Number(amount_received);
+        
+        // Update project with new payment received
+        const updateResult = await db.query(
+            `UPDATE projects 
+             SET payment_received = $1, 
+                 remaining_balance = COALESCE(payment_amount, 0) - $1,
+                 payment_status = CASE 
+                    WHEN $1 >= COALESCE(payment_amount, 0) THEN 'fully_paid'
+                    WHEN $1 > 0 THEN 'partially_paid'
+                    ELSE 'pending'
+                 END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE project_id = $2 
+             RETURNING *`,
+            [newPaymentReceived, projectId]
+        );
+
+        // Create payment record in a separate table for audit trail (if table exists)
+        try {
+            await db.query(
+                `INSERT INTO project_payments (project_id, amount_received, payment_date, notes, created_at)
+                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+                [projectId, amount_received, payment_date || new Date(), notes || null]
+            );
+        } catch (paymentTableErr) {
+            // Table might not exist, but we've still updated the project successfully
+            console.warn('Could not create payment record (table may not exist):', paymentTableErr.message);
+        }
+
+        // Notify project manager if payment is recorded
+        try {
+            const manager = project.project_manager_id;
+            const projectName = project.project_name || `Project #${projectId}`;
+            const amountFormatted = new Intl.NumberFormat('en-ZA', { 
+                style: 'currency', 
+                currency: 'ZAR' 
+            }).format(amount_received);
+            
+            const newStatus = updateResult.rows[0].payment_status;
+            let statusMessage = '';
+            if (newStatus === 'fully_paid') {
+                statusMessage = ' - Project is now FULLY PAID!';
+            } else if (newStatus === 'partially_paid') {
+                statusMessage = ` - Remaining balance: R${Number(updateResult.rows[0].remaining_balance).toFixed(2)}`;
+            }
+
+            if (manager) {
+                await db.query(
+                    `INSERT INTO notifications (
+                        employee_id, type, title, message, 
+                        related_entity_type, related_entity_id, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+                    [
+                        manager,
+                        'project_payment_received',
+                        `Payment Received: ${projectName}`,
+                        `Payment of ${amountFormatted} has been recorded for ${projectName}${statusMessage}`,
+                        'project',
+                        projectId
+                    ]
+                );
+            }
+        } catch (notifErr) {
+            console.error('Error creating payment notification:', notifErr);
+            // Don't fail the payment record if notification fails
+        }
+
+        return res.json({ 
+            ok: true, 
+            project: updateResult.rows[0],
+            message: `Payment of R${Number(amount_received).toFixed(2)} recorded successfully`
+        });
+    } catch (err) {
+        console.error('Record payment failed:', err);
+        return res.status(500).json({ ok: false, error: 'Failed to record payment', details: err.message });
+    }
+});
+
+// Get project payment status and history
+// GET /api/projects/:id/payment-status
+router.get('/:id/payment-status', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+
+        // Get current payment status
+        const projectResult = await db.query(
+            `SELECT 
+                project_id,
+                payment_amount,
+                payment_received,
+                remaining_balance,
+                payment_status,
+                updated_at
+             FROM projects 
+             WHERE project_id = $1`,
+            [projectId]
+        );
+
+        if (projectResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const paymentStatus = projectResult.rows[0];
+
+        // Try to get payment history if table exists
+        let paymentHistory = [];
+        try {
+            const historyResult = await db.query(
+                `SELECT * FROM project_payments 
+                 WHERE project_id = $1 
+                 ORDER BY created_at DESC`,
+                [projectId]
+            );
+            paymentHistory = historyResult.rows;
+        } catch (historyErr) {
+            console.warn('Could not fetch payment history (table may not exist):', historyErr.message);
+        }
+
+        return res.json({
+            ok: true,
+            paymentStatus,
+            history: paymentHistory
+        });
+    } catch (err) {
+        console.error('Fetch payment status failed:', err);
+        return res.status(500).json({ ok: false, error: 'Failed to fetch payment status' });
+    }
+});
+
+module.exports = router;
