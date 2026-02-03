@@ -4,6 +4,7 @@ const db = require('../db');
 const multer = require('multer');
 const crypto = require('crypto');
 const { sendNotification } = require('../lib/notifications');
+const { v4: uuidv4 } = require('uuid');
 
 // Use memory storage so file buffer is available for storing in DB
 const storage = multer.memoryStorage();
@@ -15,6 +16,25 @@ const upload = multer({
 // Helper function to calculate file hash
 function calculateFileHash(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+// Helper function to generate unique document ID
+function generateUniqueDocId() {
+  return 'DOC-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + 
+         Math.floor(Math.random() * 999999).toString().padStart(6, '0');
+}
+
+// Helper function to log document activity
+async function logDocumentActivity(documentId, actionType, performedBy, details = {}, ipAddress = null) {
+  try {
+    await db.query(
+      `INSERT INTO document_activity_log (document_id, action_type, performed_by, details, ip_address)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [documentId, actionType, performedBy, JSON.stringify(details), ipAddress]
+    );
+  } catch (err) {
+    console.error('Failed to log document activity:', err);
+  }
 }
 
 // POST /api/documents/upload - upload a file and store in DB
@@ -389,5 +409,640 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+// ===== NEW DOCUMENT MANAGEMENT SYSTEM ENDPOINTS =====
 
+// POST /api/documents/:id/check-out - Check out a document
+router.post('/:id/check-out', async (req, res) => {
+  const { id } = req.params;
+  const { checked_out_by, due_date } = req.body;
+  
+  try {
+    if (!checked_out_by) {
+      return res.status(400).json({ error: 'checked_out_by is required' });
+    }
+
+    // Update document status to checked_out
+    const result = await db.query(
+      `UPDATE documents 
+       SET status = 'checked_out', checked_out_by = $1, checked_out_at = CURRENT_TIMESTAMP, 
+           check_in_due_date = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE document_id = $3 AND status = 'available'
+       RETURNING *`,
+      [checked_out_by, due_date || null, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ 
+        error: 'Document cannot be checked out', 
+        detail: 'Document is not available or already checked out' 
+      });
+    }
+
+    const document = result.rows[0];
+    
+    // Log activity
+    await logDocumentActivity(id, 'checked_out', checked_out_by, { 
+      due_date: due_date 
+    });
+
+    // Send notification
+    try {
+      await sendNotification({
+        type: 'document_checked_out',
+        document_id: id,
+        document_name: document.name,
+        checked_out_by: checked_out_by,
+        message: `Document "${document.name}" has been checked out by ${checked_out_by}`
+      });
+    } catch (err) {
+      console.error('Notification failed:', err);
+    }
+
+    res.json({ message: 'Document checked out successfully', document });
+  } catch (err) {
+    console.error('Check-out failed:', err);
+    res.status(500).json({ error: 'Check-out failed', detail: err.message });
+  }
+});
+
+// POST /api/documents/:id/check-in - Check in a document
+router.post('/:id/check-in', async (req, res) => {
+  const { id } = req.params;
+  const { checked_in_by } = req.body;
+
+  try {
+    if (!checked_in_by) {
+      return res.status(400).json({ error: 'checked_in_by is required' });
+    }
+
+    // Update document status back to available
+    const result = await db.query(
+      `UPDATE documents 
+       SET status = 'available', checked_out_by = NULL, checked_out_at = NULL, 
+           check_in_due_date = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE document_id = $1 AND status = 'checked_out'
+       RETURNING *`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ 
+        error: 'Document cannot be checked in', 
+        detail: 'Document is not currently checked out' 
+      });
+    }
+
+    const document = result.rows[0];
+
+    // Log activity
+    await logDocumentActivity(id, 'checked_in', checked_in_by);
+
+    // Send notification
+    try {
+      await sendNotification({
+        type: 'document_checked_in',
+        document_id: id,
+        document_name: document.name,
+        checked_in_by: checked_in_by,
+        message: `Document "${document.name}" has been checked in by ${checked_in_by}`
+      });
+    } catch (err) {
+      console.error('Notification failed:', err);
+    }
+
+    res.json({ message: 'Document checked in successfully', document });
+  } catch (err) {
+    console.error('Check-in failed:', err);
+    res.status(500).json({ error: 'Check-in failed', detail: err.message });
+  }
+});
+
+// GET /api/documents/:id/profile - Get document profile (metadata)
+router.get('/:id/profile', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `SELECT * FROM document_profiles WHERE document_id = $1`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Document profile not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Error fetching document profile:', err);
+    res.status(500).json({ error: 'Failed to fetch profile', detail: err.message });
+  }
+});
+
+// POST /api/documents/:id/profile - Create or update document profile
+router.post('/:id/profile', async (req, res) => {
+  const { id } = req.params;
+  const {
+    title,
+    author,
+    subject,
+    keywords,
+    content_summary,
+    language,
+    pages,
+    created_date,
+    classification,
+    retention_period_months,
+    template_variables
+  } = req.body;
+
+  try {
+    // Check if profile exists
+    const existingProfile = await db.query(
+      'SELECT * FROM document_profiles WHERE document_id = $1',
+      [id]
+    );
+
+    let result;
+    if (existingProfile.rows.length > 0) {
+      // Update existing profile
+      result = await db.query(
+        `UPDATE document_profiles
+         SET title = $1, author = $2, subject = $3, keywords = $4, 
+             content_summary = $5, language = $6, pages = $7, created_date = $8,
+             classification = $9, retention_period_months = $10, 
+             template_variables = $11, updated_at = CURRENT_TIMESTAMP
+         WHERE document_id = $12
+         RETURNING *`,
+        [title, author, subject, keywords, content_summary, language, pages, 
+         created_date, classification, retention_period_months, 
+         template_variables ? JSON.stringify(template_variables) : null, id]
+      );
+    } else {
+      // Create new profile
+      result = await db.query(
+        `INSERT INTO document_profiles 
+         (document_id, title, author, subject, keywords, content_summary, language,
+          pages, created_date, classification, retention_period_months, template_variables)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING *`,
+        [id, title, author, subject, keywords, content_summary, language, pages,
+         created_date, classification, retention_period_months,
+         template_variables ? JSON.stringify(template_variables) : null]
+      );
+    }
+
+    // Log activity
+    await logDocumentActivity(id, 'profile_updated', req.body.updated_by || 'system', {
+      title, author, subject, classification
+    });
+
+    res.status(201).json({ 
+      message: 'Document profile saved successfully', 
+      profile: result.rows[0] 
+    });
+  } catch (err) {
+    console.error('Failed to save document profile:', err);
+    res.status(500).json({ error: 'Failed to save profile', detail: err.message });
+  }
+});
+
+// POST /api/documents/:id/share - Create a shareable link for external access
+router.post('/:id/share', async (req, res) => {
+  const { id } = req.params;
+  const { shared_by, permission_type = 'view', expires_at, client_email } = req.body;
+
+  try {
+    if (!shared_by) {
+      return res.status(400).json({ error: 'shared_by is required' });
+    }
+
+    // Generate unique share token
+    const shareToken = uuidv4();
+
+    // Create share record
+    const result = await db.query(
+      `INSERT INTO document_access_shares 
+       (document_id, share_token, shared_by, permission_type, expires_at, client_email, is_active)
+       VALUES ($1, $2, $3, $4, $5, $6, true)
+       RETURNING *`,
+      [id, shareToken, shared_by, permission_type, expires_at || null, client_email || null]
+    );
+
+    // Log activity
+    await logDocumentActivity(id, 'shared', shared_by, {
+      permission_type,
+      client_email,
+      expires_at
+    });
+
+    // Send notification if client_email provided
+    if (client_email) {
+      try {
+        await sendNotification({
+          type: 'document_shared',
+          document_id: id,
+          recipient: client_email,
+          share_token: shareToken,
+          permission_type,
+          message: `A document has been shared with you`
+        });
+      } catch (err) {
+        console.error('Notification failed:', err);
+      }
+    }
+
+    res.status(201).json({
+      message: 'Document shared successfully',
+      share: result.rows[0],
+      shareUrl: `/client-portal/shared/${shareToken}`
+    });
+  } catch (err) {
+    console.error('Share creation failed:', err);
+    res.status(500).json({ error: 'Failed to create share', detail: err.message });
+  }
+});
+
+// GET /api/documents/:id/shares - Get all shares for a document
+router.get('/:id/shares', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `SELECT * FROM document_access_shares 
+       WHERE document_id = $1 
+       ORDER BY shared_at DESC`,
+      [id]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching document shares:', err);
+    res.status(500).json({ error: 'Failed to fetch shares', detail: err.message });
+  }
+});
+
+// DELETE /api/documents/share/:shareId - Revoke a share link
+router.delete('/share/:shareId', async (req, res) => {
+  const { shareId } = req.params;
+  const { revoked_by } = req.body;
+
+  try {
+    const result = await db.query(
+      `UPDATE document_access_shares 
+       SET is_active = FALSE
+       WHERE share_id = $1
+       RETURNING document_id, *`,
+      [shareId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Share not found' });
+    }
+
+    const share = result.rows[0];
+
+    // Log activity
+    await logDocumentActivity(share.document_id, 'share_revoked', revoked_by || 'system', {
+      share_id: shareId
+    });
+
+    res.json({ message: 'Share revoked successfully' });
+  } catch (err) {
+    console.error('Share revocation failed:', err);
+    res.status(500).json({ error: 'Failed to revoke share', detail: err.message });
+  }
+});
+
+// GET /api/documents/search - Full-text search documents
+router.get('/search/query', async (req, res) => {
+  const { q, project_id, limit = 20, offset = 0 } = req.query;
+
+  try {
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const searchTerm = q.trim();
+    let baseQuery = `
+      SELECT 
+        d.document_id,
+        d.name,
+        d.project_id,
+        d.project_name,
+        d.description,
+        d.document_type,
+        d.size,
+        d.created_at,
+        d.unique_doc_id,
+        d.status,
+        dp.title as profile_title,
+        dp.classification,
+        (
+          CASE 
+            WHEN d.name ILIKE '%' || $1 || '%' THEN 3
+            WHEN d.description ILIKE '%' || $1 || '%' THEN 2
+            WHEN d.project_name ILIKE '%' || $1 || '%' THEN 1
+            ELSE 0
+          END
+        ) as relevance
+      FROM documents d
+      LEFT JOIN document_profiles dp ON d.document_id = dp.document_id
+      WHERE (d.name ILIKE '%' || $1 || '%' 
+             OR d.description ILIKE '%' || $1 || '%'
+             OR d.project_name ILIKE '%' || $1 || '%')
+    `;
+
+    const params = [searchTerm];
+    let paramCount = 2;
+
+    if (project_id) {
+      baseQuery += ` AND d.project_id = $${paramCount}`;
+      params.push(project_id);
+      paramCount++;
+    }
+
+    baseQuery += ` ORDER BY relevance DESC, d.created_at DESC 
+                   LIMIT $${paramCount} OFFSET $${paramCount + 1}`;
+    params.push(limit, offset);
+
+    const result = await db.query(baseQuery, params);
+
+    // Get total count for pagination
+    let countQuery = `
+      SELECT COUNT(*) as total FROM documents d
+      WHERE (d.name ILIKE '%' || $1 || '%' 
+             OR d.description ILIKE '%' || $1 || '%'
+             OR d.project_name ILIKE '%' || $1 || '%')
+    `;
+    const countParams = [searchTerm];
+
+    if (project_id) {
+      countQuery += ` AND d.project_id = $2`;
+      countParams.push(project_id);
+    }
+
+    const countResult = await db.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    res.json({
+      results: result.rows,
+      pagination: {
+        total,
+        limit: parseInt(limit, 10),
+        offset: parseInt(offset, 10),
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (err) {
+    console.error('Search failed:', err);
+    res.status(500).json({ error: 'Search failed', detail: err.message });
+  }
+});
+
+// GET /api/documents/:id/activity - Get activity log for a document
+router.get('/:id/activity', async (req, res) => {
+  const { id } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+
+  try {
+    const result = await db.query(
+      `SELECT * FROM document_activity_log 
+       WHERE document_id = $1
+       ORDER BY performed_at DESC
+       LIMIT $2 OFFSET $3`,
+      [id, limit, offset]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching activity log:', err);
+    res.status(500).json({ error: 'Failed to fetch activity', detail: err.message });
+  }
+});
+
+// POST /api/documents/:id/categories - Assign document to category
+router.post('/:id/assign-category', async (req, res) => {
+  const { id } = req.params;
+  const { category_id, assigned_by } = req.body;
+
+  try {
+    // Update document to link with category
+    const result = await db.query(
+      `UPDATE documents 
+       SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{category_id}', $1)
+       WHERE document_id = $2
+       RETURNING *`,
+      [JSON.stringify(category_id), id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Document not found' });
+    }
+
+    // Log activity
+    await logDocumentActivity(id, 'category_assigned', assigned_by || 'system', {
+      category_id
+    });
+
+    res.json({ message: 'Category assigned successfully', document: result.rows[0] });
+  } catch (err) {
+    console.error('Category assignment failed:', err);
+    res.status(500).json({ error: 'Failed to assign category', detail: err.message });
+  }
+});
+
+// GET /api/documents/project/:projectId/by-category - Get documents organized by category
+router.get('/project/:projectId/by-category', async (req, res) => {
+  const { projectId } = req.params;
+
+  try {
+    // Get all categories for the project
+    const categoriesResult = await db.query(
+      `SELECT * FROM document_categories 
+       WHERE project_id = $1 
+       ORDER BY display_order ASC`,
+      [projectId]
+    );
+
+    const categories = categoriesResult.rows;
+
+    // For each category, get documents assigned to it
+    const result = await Promise.all(
+      categories.map(async (category) => {
+        const docsResult = await db.query(
+          `SELECT * FROM documents 
+           WHERE project_id = $1 
+           AND (metadata->>'category_id')::INTEGER = $2
+           ORDER BY created_at DESC`,
+          [projectId, category.category_id]
+        );
+        return {
+          ...category,
+          documents: docsResult.rows
+        };
+      })
+    );
+
+    // Also get uncategorized documents
+    const uncategorizedResult = await db.query(
+      `SELECT * FROM documents 
+       WHERE project_id = $1 
+       AND (metadata->>'category_id' IS NULL OR metadata->>'category_id' = '')
+       ORDER BY created_at DESC`,
+      [projectId]
+    );
+
+    result.push({
+      category_id: null,
+      category_name: 'Uncategorized',
+      documents: uncategorizedResult.rows
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error('Error fetching categorized documents:', err);
+    res.status(500).json({ error: 'Failed to fetch documents', detail: err.message });
+  }
+});
+
+// POST /api/documents/categories - Create a new document category
+router.post('/categories', async (req, res) => {
+  const { project_id, category_name, description, icon, display_order } = req.body;
+
+  try {
+    if (!project_id || !category_name) {
+      return res.status(400).json({ error: 'project_id and category_name are required' });
+    }
+
+    const result = await db.query(
+      `INSERT INTO document_categories 
+       (project_id, category_name, description, icon, display_order)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [project_id, category_name, description || null, icon || null, display_order || 0]
+    );
+
+    res.status(201).json({
+      message: 'Category created successfully',
+      category: result.rows[0]
+    });
+  } catch (err) {
+    console.error('Category creation failed:', err);
+    res.status(500).json({ error: 'Failed to create category', detail: err.message });
+  }
+});
+
+// GET /api/documents/categories/:projectId - Get all categories for a project
+router.get('/categories/:projectId', async (req, res) => {
+  const { projectId } = req.params;
+
+  try {
+    const result = await db.query(
+      `SELECT * FROM document_categories 
+       WHERE project_id = $1 
+       ORDER BY display_order ASC`,
+      [projectId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error fetching categories:', err);
+    res.status(500).json({ error: 'Failed to fetch categories', detail: err.message });
+  }
+});
+
+// GET /api/documents/:id/accessible-shares - Check if document is accessible via share token
+router.get('/shared/:shareToken/validate', async (req, res) => {
+  const { shareToken } = req.params;
+
+  try {
+    const result = await db.query(
+      `SELECT das.*, d.document_id, d.name, d.mime_type, d.size, d.project_name
+       FROM document_access_shares das
+       JOIN documents d ON das.document_id = d.document_id
+       WHERE das.share_token = $1 AND das.is_active = TRUE
+       AND (das.expires_at IS NULL OR das.expires_at > CURRENT_TIMESTAMP)`,
+      [shareToken]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid or expired share link' });
+    }
+
+    const share = result.rows[0];
+
+    // Update access count and last accessed
+    await db.query(
+      `UPDATE document_access_shares 
+       SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP
+       WHERE share_id = $1`,
+      [share.share_id]
+    );
+
+    // Log activity
+    await logDocumentActivity(share.document_id, 'accessed_via_share', 'external_user', {
+      share_token: shareToken
+    });
+
+    res.json({
+      isValid: true,
+      document_id: share.document_id,
+      document_name: share.name,
+      mime_type: share.mime_type,
+      size: share.size,
+      project_name: share.project_name,
+      permission_type: share.permission_type
+    });
+  } catch (err) {
+    console.error('Share validation failed:', err);
+    res.status(500).json({ error: 'Validation failed', detail: err.message });
+  }
+});
+
+// GET /api/documents/shared/:shareToken/download - Download document via share link
+router.get('/shared/:shareToken/download', async (req, res) => {
+  const { shareToken } = req.params;
+
+  try {
+    const result = await db.query(
+      `SELECT das.*, d.document_id, d.name, d.mime_type, d.content
+       FROM document_access_shares das
+       JOIN documents d ON das.document_id = d.document_id
+       WHERE das.share_token = $1 AND das.is_active = TRUE
+       AND (das.expires_at IS NULL OR das.expires_at > CURRENT_TIMESTAMP)`,
+      [shareToken]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid or expired share link' });
+    }
+
+    const share = result.rows[0];
+
+    if (share.permission_type !== 'download' && share.permission_type !== 'edit') {
+      return res.status(403).json({ error: 'Download not permitted for this share' });
+    }
+
+    // Update access info
+    await db.query(
+      `UPDATE document_access_shares 
+       SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP
+       WHERE share_id = $1`,
+      [share.share_id]
+    );
+
+    // Log activity
+    await logDocumentActivity(share.document_id, 'downloaded_via_share', 'external_user', {
+      share_token: shareToken
+    });
+
+    res.setHeader('Content-Type', share.mime_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${share.name.replace(/\"/g, '')}"`);
+    res.send(share.content);
+  } catch (err) {
+    console.error('Share download failed:', err);
+    res.status(500).json({ error: 'Download failed', detail: err.message });
+  }
+});
+
+module.exports = router;
