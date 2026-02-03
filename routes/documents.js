@@ -106,8 +106,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO documents (folder_id, project_id, project_name, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      `INSERT INTO documents (folder_id, project_id, project_name, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date, unique_doc_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, generate_unique_doc_id()) RETURNING *`,
       [folder_id, finalProjectId, finalProjectName, file.originalname, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
     );
 
@@ -172,7 +172,25 @@ router.get('/folders/project/:projectId', async (req, res) => {
 router.get('/folders/:folderId/documents', async (req, res) => {
   const { folderId } = req.params;
   try {
-    const result = await db.query('SELECT document_id, name, mime_type, size, uploaded_by, created_at FROM documents WHERE folder_id = $1 ORDER BY created_at DESC', [folderId]);
+    const result = await db.query(`
+      SELECT 
+        document_id, 
+        unique_doc_id,
+        name, 
+        mime_type, 
+        size, 
+        uploaded_by, 
+        created_at,
+        updated_at,
+        project_id,
+        project_name,
+        status,
+        checked_out_by,
+        checked_out_at
+      FROM documents 
+      WHERE folder_id = $1 
+      ORDER BY created_at DESC
+    `, [folderId]);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching documents for folder:', err);
@@ -185,14 +203,54 @@ router.get('/project/:projectIdentifier', async (req, res) => {
   const { projectIdentifier } = req.params;
   try {
     // Try to find by project name first, then by ID
-    let query = `SELECT document_id, folder_id, project_id, project_name, name, mime_type, size, document_type, description, uploaded_by, expiry_date, file_hash, version, is_latest_version, created_at 
-                 FROM documents WHERE project_name = $1 ORDER BY created_at DESC`;
+    let query = `SELECT 
+                   document_id, 
+                   unique_doc_id,
+                   folder_id, 
+                   project_id, 
+                   project_name, 
+                   name, 
+                   mime_type, 
+                   size, 
+                   document_type, 
+                   description, 
+                   uploaded_by, 
+                   expiry_date, 
+                   file_hash, 
+                   status,
+                   checked_out_by,
+                   checked_out_at,
+                   created_at,
+                   updated_at
+                 FROM documents 
+                 WHERE project_name = $1 
+                 ORDER BY created_at DESC`;
     let result = await db.query(query, [projectIdentifier]);
     
     // If not found by name, try by ID
     if (result.rows.length === 0) {
-      query = `SELECT document_id, folder_id, project_id, project_name, name, mime_type, size, document_type, description, uploaded_by, expiry_date, file_hash, version, is_latest_version, created_at 
-               FROM documents WHERE project_id = $1 ORDER BY created_at DESC`;
+      query = `SELECT 
+                 document_id, 
+                 unique_doc_id,
+                 folder_id, 
+                 project_id, 
+                 project_name, 
+                 name, 
+                 mime_type, 
+                 size, 
+                 document_type, 
+                 description, 
+                 uploaded_by, 
+                 expiry_date, 
+                 file_hash, 
+                 status,
+                 checked_out_by,
+                 checked_out_at,
+                 created_at,
+                 updated_at
+               FROM documents 
+               WHERE project_id = $1 
+               ORDER BY created_at DESC`;
       result = await db.query(query, [projectIdentifier]);
     }
     

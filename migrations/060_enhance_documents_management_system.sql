@@ -2,7 +2,7 @@
 -- Adds features for: version control, check-in/out, document profiling, access sharing, and full-text search
 
 -- 1. Add new columns to documents table for enhanced management
-ALTER TABLE documents ADD COLUMN IF NOT EXISTS unique_doc_id TEXT UNIQUE;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS unique_doc_id TEXT UNIQUE DEFAULT generate_unique_doc_id();
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_hash TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS expiry_date DATE;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'available'; -- available, checked_out, archived, expired
