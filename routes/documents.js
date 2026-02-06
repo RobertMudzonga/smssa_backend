@@ -18,6 +18,14 @@ function calculateFileHash(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
+// Helper function to decide document name
+function resolveDocumentName(file, documentName) {
+  if (documentName && typeof documentName === 'string' && documentName.trim().length > 0) {
+    return documentName.trim();
+  }
+  return file.originalname;
+}
+
 // Helper function to generate unique document ID
 function generateUniqueDocId() {
   return 'DOC-' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '-' + 
@@ -56,8 +64,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const isClientPortal = req.body.client_portal_token !== undefined;
     const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
 
-    const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null } = req.body;
+    const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null } = req.body;
     const file = req.file;
+    const resolvedName = resolveDocumentName(file, document_name);
 
     // Calculate file hash for deduplication
     const fileHash = calculateFileHash(file.buffer);
@@ -108,7 +117,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const result = await db.query(
       `INSERT INTO documents (folder_id, project_id, project_name, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date, unique_doc_id) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, generate_unique_doc_id()) RETURNING *`,
-      [folder_id, finalProjectId, finalProjectName, file.originalname, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
+      [folder_id, finalProjectId, finalProjectName, resolvedName, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
     );
 
     const document = result.rows[0];
@@ -119,9 +128,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         await sendNotification({
           type: 'document_uploaded',
           project_id: finalProjectId,
-          document_name: file.originalname,
+          document_name: resolvedName,
           document_type: document_type || 'Unknown',
-          message: `New document uploaded via client portal: ${file.originalname}`
+          message: `New document uploaded via client portal: ${resolvedName}`
         });
       } catch (notifErr) {
         console.error('Failed to send notification:', notifErr);
@@ -132,6 +141,121 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     res.status(201).json({ message: 'File uploaded successfully', document });
   } catch (err) {
     console.error('Document upload failed:', err);
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'File too large', detail: 'Maximum file size is 10MB' });
+    }
+    res.status(500).json({ error: 'Upload failed', detail: err.message });
+  }
+});
+
+// POST /api/documents/bulk-upload - upload multiple files and store in DB
+// expects multipart/form-data with field `files` and optional `project_name` (preferred) or `project_id`, and optional `folder_id`
+router.post('/bulk-upload', upload.array('files'), async (req, res) => {
+  try {
+    const files = req.files || [];
+    if (!Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    // Allow all users to upload documents (including client portal)
+    const isClientPortal = req.body.client_portal_token !== undefined;
+    const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
+
+    const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null } = req.body;
+
+    let finalProjectId = project_id;
+    let finalProjectName = project_name;
+
+    // If project_name provided, resolve it to project_id
+    if (project_name && !project_id) {
+      const projectRes = await db.query(
+        'SELECT project_id, project_name FROM projects WHERE project_name = $1 LIMIT 1',
+        [project_name]
+      );
+      if (projectRes.rows.length > 0) {
+        finalProjectId = projectRes.rows[0].project_id;
+        finalProjectName = projectRes.rows[0].project_name;
+      } else {
+        return res.status(404).json({ error: 'Project not found', detail: `No project found with name "${project_name}"` });
+      }
+    }
+
+    // If project_id provided but no project_name, look up the name
+    if (finalProjectId && !finalProjectName) {
+      const projectRes = await db.query(
+        'SELECT project_name FROM projects WHERE project_id = $1 LIMIT 1',
+        [finalProjectId]
+      );
+      if (projectRes.rows.length > 0) {
+        finalProjectName = projectRes.rows[0].project_name;
+      }
+    }
+
+    const uploaded = [];
+    const failed = [];
+
+    for (const file of files) {
+      try {
+        // File size validation (additional check beyond multer)
+        const maxSize = 10 * 1024 * 1024; // 10MB
+        if (file.size > maxSize) {
+          throw new Error(`File too large (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum allowed size is 10MB.`);
+        }
+
+        const resolvedName = resolveDocumentName(file, files.length === 1 ? document_name : null);
+
+        // Calculate file hash for deduplication
+        const fileHash = calculateFileHash(file.buffer);
+
+        // Check for duplicate file (same hash in same project)
+        if (finalProjectId) {
+          const duplicateCheck = await db.query(
+            'SELECT document_id, name FROM documents WHERE project_id = $1 AND file_hash = $2 LIMIT 1',
+            [finalProjectId, fileHash]
+          );
+          if (duplicateCheck.rows.length > 0) {
+            throw new Error(`Duplicate file detected: ${duplicateCheck.rows[0].name}`);
+          }
+        }
+
+        const result = await db.query(
+          `INSERT INTO documents (folder_id, project_id, project_name, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date, unique_doc_id) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, generate_unique_doc_id()) RETURNING *`,
+          [folder_id, finalProjectId, finalProjectName, resolvedName, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
+        );
+
+        const document = result.rows[0];
+        uploaded.push(document);
+
+        if (isClientPortal && finalProjectId) {
+          try {
+            await sendNotification({
+              type: 'document_uploaded',
+              project_id: finalProjectId,
+              document_name: resolvedName,
+              document_type: document_type || 'Unknown',
+              message: `New document uploaded via client portal: ${resolvedName}`
+            });
+          } catch (notifErr) {
+            console.error('Failed to send notification:', notifErr);
+          }
+        }
+      } catch (fileErr) {
+        failed.push({
+          file_name: file.originalname,
+          error: fileErr.message || 'Upload failed'
+        });
+      }
+    }
+
+    const status = failed.length > 0 ? 207 : 201;
+    res.status(status).json({
+      message: failed.length > 0 ? 'Bulk upload completed with errors' : 'Bulk upload completed',
+      uploaded,
+      failed
+    });
+  } catch (err) {
+    console.error('Bulk document upload failed:', err);
     if (err.code === 'LIMIT_FILE_SIZE') {
       return res.status(413).json({ error: 'File too large', detail: 'Maximum file size is 10MB' });
     }
