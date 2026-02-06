@@ -287,7 +287,7 @@ router.post('/', async (req, res) => {
   router.get('/lost/list', async (req, res) => {
     const { search, assigned_employee_id } = req.query;
     try {
-      const whereConditions = ['p.is_archived = TRUE'];
+      const whereConditions = ["(p.is_archived = TRUE OR p.status = 'lost')"];
       const queryParams = [];
       
       if (assigned_employee_id) {
@@ -316,7 +316,7 @@ router.post('/', async (req, res) => {
       const result = await db.query(`
         SELECT p.*, e.full_name as assigned_to_name
         FROM prospects p
-        LEFT JOIN employees e ON p.assigned_to = e.employee_id
+        LEFT JOIN employees e ON p.assigned_to = e.id
         ${whereClause}
         ORDER BY p.updated_at DESC
       `, queryParams);

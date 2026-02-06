@@ -103,7 +103,8 @@ router.get('/lost/list', async (req, res) => {
         }
 
         // Build WHERE clause for filtering
-        const whereConditions = ['l.is_archived = TRUE'];
+        // Include records explicitly archived or marked as lost in notes
+        const whereConditions = ["(l.is_archived = TRUE OR l.notes ILIKE '%MARKED AS LOST%')"];
         const queryParams = [];
         
         if (assigned_employee_id) {
@@ -136,7 +137,7 @@ router.get('/lost/list', async (req, res) => {
                 l.assigned_employee_id, l.notes, l.created_at, l.updated_at,
                 e.full_name as assigned_to_name
             FROM leads l
-            LEFT JOIN employees e ON l.assigned_employee_id = e.employee_id
+            LEFT JOIN employees e ON l.assigned_employee_id = e.id
             ${whereClause}
             ORDER BY l.updated_at DESC
         `;
