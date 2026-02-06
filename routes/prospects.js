@@ -283,6 +283,51 @@ router.post('/', async (req, res) => {
   }
 });
 
+  // GET /api/prospects/lost/list - get all lost/archived prospects - Must come BEFORE /:id
+  router.get('/lost/list', async (req, res) => {
+    const { search, assigned_employee_id } = req.query;
+    try {
+      const whereConditions = ['p.is_archived = TRUE'];
+      const queryParams = [];
+      
+      if (assigned_employee_id) {
+        if (assigned_employee_id === 'unassigned') {
+          whereConditions.push('p.assigned_to IS NULL');
+        } else {
+          queryParams.push(assigned_employee_id);
+          whereConditions.push(`p.assigned_to = $${queryParams.length}`);
+        }
+      }
+      
+      if (search && typeof search === 'string' && search.trim()) {
+        const searchTerm = `%${search.trim().toLowerCase()}%`;
+        queryParams.push(searchTerm);
+        whereConditions.push(`(
+          LOWER(p.first_name) LIKE $${queryParams.length} OR 
+          LOWER(p.last_name) LIKE $${queryParams.length} OR 
+          LOWER(p.deal_name) LIKE $${queryParams.length} OR 
+          LOWER(p.company) LIKE $${queryParams.length} OR 
+          LOWER(p.email) LIKE $${queryParams.length}
+        )`);
+      }
+
+      const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+      
+      const result = await db.query(`
+        SELECT p.*, e.full_name as assigned_to_name
+        FROM prospects p
+        LEFT JOIN employees e ON p.assigned_to = e.employee_id
+        ${whereClause}
+        ORDER BY p.updated_at DESC
+      `, queryParams);
+      
+      res.json(result.rows);
+    } catch (err) {
+      console.error('Error fetching lost prospects:', err);
+      res.status(500).json({ error: 'Failed to fetch lost prospects', detail: err.message });
+    }
+  });
+
   // PATCH /api/prospects/:id - update prospect fields
   router.patch('/:id', async (req, res) => {
     const { id } = req.params;
@@ -392,6 +437,22 @@ router.post('/', async (req, res) => {
     } catch (err) {
       console.error('Error marking prospect lost:', err);
       res.status(500).json({ error: 'Failed to mark prospect lost', detail: err.message });
+    }
+  });
+
+  // PATCH /api/prospects/:id/recover - recover a lost prospect
+  router.patch('/:id/recover', async (req, res) => {
+    const { id } = req.params;
+    try {
+      const pRes = await db.query('SELECT notes FROM prospects WHERE prospect_id = $1', [id]);
+      if (pRes.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
+      const existing = pRes.rows[0].notes || '';
+      const newNotes = `${existing}\n[${new Date().toISOString()}] RECOVERED FROM LOST`;
+      const result = await db.query('UPDATE prospects SET status = $1, notes = $2, is_archived = $3, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $4 RETURNING *', ['opportunity', newNotes, false, id]);
+      res.json({ message: 'Prospect recovered successfully', prospect: result.rows[0] });
+    } catch (err) {
+      console.error('Error recovering prospect:', err);
+      res.status(500).json({ error: 'Failed to recover prospect', detail: err.message });
     }
   });
 

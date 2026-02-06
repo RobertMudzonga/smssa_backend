@@ -90,7 +90,66 @@ router.get('/', async (req, res) => {
     }
 });
 
-// --- 2. GET SINGLE LEAD WITH FULL DETAILS (including form responses) ---
+// --- 2. GET ALL LOST LEADS (Archived/Lost) - Must come BEFORE /:id route ---
+router.get('/lost/list', async (req, res) => {
+    try {
+        const { search, assigned_employee_id } = req.query;
+        
+        // Check if leads table exists
+        const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
+        if (!leadsExists.rows[0] || !leadsExists.rows[0].exists) {
+            console.warn('leads table not found - returning empty array');
+            return res.json([]);
+        }
+
+        // Build WHERE clause for filtering
+        const whereConditions = ['l.is_archived = TRUE'];
+        const queryParams = [];
+        
+        if (assigned_employee_id) {
+            if (assigned_employee_id === 'unassigned') {
+                whereConditions.push('l.assigned_employee_id IS NULL');
+            } else {
+                queryParams.push(assigned_employee_id);
+                whereConditions.push(`l.assigned_employee_id = $${queryParams.length}`);
+            }
+        }
+        
+        // Add search filter if provided
+        if (search && typeof search === 'string' && search.trim()) {
+            const searchTerm = `%${search.trim().toLowerCase()}%`;
+            queryParams.push(searchTerm);
+            whereConditions.push(`(
+                LOWER(l.first_name) LIKE $${queryParams.length} OR 
+                LOWER(l.last_name) LIKE $${queryParams.length} OR 
+                LOWER(l.company) LIKE $${queryParams.length} OR 
+                LOWER(l.email) LIKE $${queryParams.length} OR 
+                LOWER(l.phone) LIKE $${queryParams.length}
+            )`);
+        }
+
+        const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
+        
+        const query = `
+            SELECT 
+                l.lead_id, l.first_name, l.last_name, l.company, l.email, l.phone,
+                l.assigned_employee_id, l.notes, l.created_at, l.updated_at,
+                e.full_name as assigned_to_name
+            FROM leads l
+            LEFT JOIN employees e ON l.assigned_employee_id = e.employee_id
+            ${whereClause}
+            ORDER BY l.updated_at DESC
+        `;
+        
+        const result = await db.query(query, queryParams);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching lost leads:', err);
+        res.status(500).json({ error: 'Failed to fetch lost leads' });
+    }
+});
+
+// --- 3. GET SINGLE LEAD WITH FULL DETAILS (including form responses) ---
 router.get('/:id', async (req, res) => {
     const { id } = req.params;
     
@@ -301,7 +360,32 @@ router.patch('/:id/lost', async (req, res) => {
     }
 });
 
-// --- 7. DELETE LEAD (for duplicates) ---
+// --- 7. RECOVER A LOST LEAD ---
+router.patch('/:id/recover', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const leadResult = await db.query('SELECT notes FROM leads WHERE lead_id = $1', [id]);
+        if (leadResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Lead not found' });
+        }
+
+        const existingNotes = leadResult.rows[0].notes || '';
+        const recoveryNote = `${existingNotes}\n[${new Date().toISOString()}] RECOVERED FROM LOST`;
+
+        const result = await db.query(
+            `UPDATE leads SET notes = $1, is_archived = FALSE, cold_lead_stage = 101, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,
+            [recoveryNote, id]
+        );
+
+        res.json({ message: 'Lead recovered successfully', lead: result.rows[0] });
+    } catch (err) {
+        console.error('Error recovering lead:', err);
+        res.status(500).json({ error: 'Failed to recover lead' });
+    }
+});
+
+// --- 8. DELETE LEAD (for duplicates) ---
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
 
