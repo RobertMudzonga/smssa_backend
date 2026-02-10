@@ -50,6 +50,7 @@ const debugRouter = require('./routes/debug');
 const paymentRequestsRouter = require('./routes/payment_requests');
 const notificationsRouter = require('./routes/notifications');
 const leaveRequestsRouter = require('./routes/leave_requests');
+const submissionsRouter = require('./routes/submissions');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -72,6 +73,7 @@ app.use('/api/debug', debugRouter);
 app.use('/api/payment-requests', paymentRequestsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/leave-requests', leaveRequestsRouter);
+app.use('/api/submissions', submissionsRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
