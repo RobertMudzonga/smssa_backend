@@ -64,7 +64,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const isClientPortal = req.body.client_portal_token !== undefined;
     const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
 
-    const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null } = req.body;
+    const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null, legal_case_id = null } = req.body;
     const file = req.file;
     const resolvedName = resolveDocumentName(file, document_name);
 
@@ -99,7 +99,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       }
     }
 
-    // Check for duplicate file (same hash in same project)
+    // Check for duplicate file (same hash in same project or legal case)
     if (finalProjectId) {
       const duplicateCheck = await db.query(
         'SELECT document_id, name FROM documents WHERE project_id = $1 AND file_hash = $2 LIMIT 1',
@@ -113,11 +113,26 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         });
       }
     }
+    
+    // Check for duplicate file in legal case
+    if (legal_case_id && !finalProjectId) {
+      const duplicateCheck = await db.query(
+        'SELECT document_id, name FROM documents WHERE legal_case_id = $1 AND file_hash = $2 LIMIT 1',
+        [legal_case_id, fileHash]
+      );
+      if (duplicateCheck.rows.length > 0) {
+        return res.status(409).json({ 
+          error: 'Duplicate file', 
+          detail: `A file with identical content already exists: ${duplicateCheck.rows[0].name}`,
+          existing_document_id: duplicateCheck.rows[0].document_id
+        });
+      }
+    }
 
     const result = await db.query(
-      `INSERT INTO documents (folder_id, project_id, project_name, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date, unique_doc_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, generate_unique_doc_id()) RETURNING *`,
-      [folder_id, finalProjectId, finalProjectName, resolvedName, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
+      `INSERT INTO documents (folder_id, project_id, project_name, legal_case_id, name, mime_type, size, content, document_type, description, uploaded_by, file_hash, expiry_date, unique_doc_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, generate_unique_doc_id()) RETURNING *`,
+      [folder_id, finalProjectId, finalProjectName, legal_case_id || null, resolvedName, file.mimetype, file.size, file.buffer, document_type, description, uploaded_by, fileHash, expiry_date]
     );
 
     const document = result.rows[0];
