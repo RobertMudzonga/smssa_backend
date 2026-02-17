@@ -304,7 +304,7 @@ router.patch('/:id/assign', async (req, res) => {
 // --- 5. ADD COMMENT TO LEAD ---
 router.patch('/:id/comment', async (req, res) => {
     const { id } = req.params;
-    const { comment } = req.body;
+    const { comment, user_id, user_name } = req.body;
 
     if (!comment) {
         return res.status(400).json({ error: 'Comment is required' });
@@ -317,7 +317,18 @@ router.patch('/:id/comment', async (req, res) => {
         }
 
         const existingNotes = leadResult.rows[0].notes || '';
-        const newNote = `${existingNotes}\n[${new Date().toISOString()}] ${comment}`;
+        // Create structured note entry with timestamp and user info
+        const noteEntry = {
+            timestamp: new Date().toISOString(),
+            user_id: user_id || null,
+            user_name: user_name || 'System',
+            content: comment
+        };
+        
+        // Format: Append structured JSON entry to notes, separated by delimiter
+        const newNote = existingNotes 
+            ? `${existingNotes}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+            : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
 
         const result = await db.query(
             `UPDATE leads SET notes = $1, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,
@@ -334,7 +345,7 @@ router.patch('/:id/comment', async (req, res) => {
 // --- 6. MARK LEAD AS LOST ---
 router.patch('/:id/lost', async (req, res) => {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason, user_id, user_name } = req.body;
 
     if (!reason) {
         return res.status(400).json({ error: 'Reason is required' });
@@ -347,7 +358,18 @@ router.patch('/:id/lost', async (req, res) => {
         }
 
         const existingNotes = leadResult.rows[0].notes || '';
-        const lostNote = `${existingNotes}\n[${new Date().toISOString()}] MARKED AS LOST: ${reason}`;
+        // Create structured note entry with timestamp and user info
+        const noteEntry = {
+            timestamp: new Date().toISOString(),
+            user_id: user_id || null,
+            user_name: user_name || 'System',
+            content: `MARKED AS LOST: ${reason}`,
+            type: 'system'
+        };
+        
+        const lostNote = existingNotes 
+            ? `${existingNotes}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+            : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
 
         const result = await db.query(
             `UPDATE leads SET notes = $1, converted = FALSE, cold_lead_stage = NULL, is_archived = TRUE, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,
@@ -364,6 +386,7 @@ router.patch('/:id/lost', async (req, res) => {
 // --- 7. RECOVER A LOST LEAD ---
 router.patch('/:id/recover', async (req, res) => {
     const { id } = req.params;
+    const { user_id, user_name } = req.body;
 
     try {
         const leadResult = await db.query('SELECT notes FROM leads WHERE lead_id = $1', [id]);
@@ -372,7 +395,18 @@ router.patch('/:id/recover', async (req, res) => {
         }
 
         const existingNotes = leadResult.rows[0].notes || '';
-        const recoveryNote = `${existingNotes}\n[${new Date().toISOString()}] RECOVERED FROM LOST`;
+        // Create structured note entry with timestamp and user info
+        const noteEntry = {
+            timestamp: new Date().toISOString(),
+            user_id: user_id || null,
+            user_name: user_name || 'System',
+            content: 'RECOVERED FROM LOST',
+            type: 'system'
+        };
+        
+        const recoveryNote = existingNotes 
+            ? `${existingNotes}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+            : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
 
         const result = await db.query(
             `UPDATE leads SET notes = $1, is_archived = FALSE, cold_lead_stage = 101, updated_at = CURRENT_TIMESTAMP WHERE lead_id = $2 RETURNING *`,

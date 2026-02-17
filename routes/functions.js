@@ -2,16 +2,181 @@ const express = require('express');
 const router = express.Router();
 const { exec } = require('child_process');
 const db = require('../db');
+const crypto = require('crypto');
+
+// Helper function to hash password
+function hashPassword(password, salt) {
+  return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+}
+
+// Helper function to generate random password
+function generatePassword(length = 8) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Avoiding confusing characters like 0/O, 1/I
+  let password = '';
+  for (let i = 0; i < length; i++) {
+    password += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return password;
+}
 
 router.post('/generate-client-access', async (req, res) => {
   try {
-    const { projectId, clientEmail, expiryDays } = req.body || {};
-    const token = `link-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
-    const base = process.env.CLIENT_PORTAL_BASE || req.get('origin') || `https://app.example.com`;
-    const portalUrl = `${base.replace(/\/$/, '')}/client-portal/${projectId}?token=${token}&email=${encodeURIComponent(clientEmail || '')}`;
-    return res.json({ ok: true, portalUrl });
+    const { projectId, clientEmail, expiryDays = 90 } = req.body || {};
+    
+    if (!projectId) {
+      return res.status(400).json({ ok: false, error: 'Project ID is required' });
+    }
+
+    // Check project exists
+    const projectRes = await db.query(
+      'SELECT project_id, project_name, client_name FROM projects WHERE project_id = $1 LIMIT 1',
+      [projectId]
+    );
+    if (projectRes.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: 'Project not found' });
+    }
+    const project = projectRes.rows[0];
+
+    // Generate unique token and password
+    const token = `portal-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
+    const password = generatePassword(8);
+    const salt = crypto.randomBytes(16).toString('hex');
+    const password_hash = hashPassword(password, salt);
+
+    // Calculate expiry date
+    const expires_at = new Date();
+    expires_at.setDate(expires_at.getDate() + expiryDays);
+
+    // Deactivate any existing access for this project
+    await db.query(
+      'UPDATE client_portal_access SET is_active = false WHERE project_id = $1',
+      [projectId]
+    ).catch(() => {}); // Ignore if table doesn't exist yet
+
+    // Insert new access record
+    try {
+      await db.query(
+        `INSERT INTO client_portal_access (project_id, access_token, password_hash, expires_at, is_active, created_at)
+         VALUES ($1, $2, $3, $4, true, NOW())`,
+        [projectId, token, salt + ':' + password_hash, expires_at]
+      );
+    } catch (dbErr) {
+      console.error('DB insert error:', dbErr);
+      // If table doesn't exist, try to create it
+      if (dbErr.code === '42P01') {
+        await db.query(`
+          CREATE TABLE IF NOT EXISTS client_portal_access (
+            id SERIAL PRIMARY KEY,
+            project_id INTEGER NOT NULL,
+            access_token TEXT NOT NULL UNIQUE,
+            password_hash TEXT,
+            expires_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+            is_active BOOLEAN DEFAULT TRUE,
+            last_accessed_at TIMESTAMP WITHOUT TIME ZONE,
+            created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+        await db.query(
+          `INSERT INTO client_portal_access (project_id, access_token, password_hash, expires_at, is_active, created_at)
+           VALUES ($1, $2, $3, $4, true, NOW())`,
+          [projectId, token, salt + ':' + password_hash, expires_at]
+        );
+      } else {
+        throw dbErr;
+      }
+    }
+
+    // Generate the portal URL
+    const base = process.env.CLIENT_PORTAL_BASE || process.env.FRONTEND_URL || req.get('origin') || 'http://localhost:5173';
+    const portalUrl = `${base.replace(/\/$/, '')}/client-portal?token=${encodeURIComponent(token)}`;
+
+    return res.json({ 
+      ok: true, 
+      portalUrl,
+      password, // Only returned once at generation time - must be shared with client securely
+      expires_at,
+      project_name: project.project_name,
+      client_name: project.client_name
+    });
   } catch (err) {
     console.error('generate-client-access error', err);
+    return res.status(500).json({ ok: false, error: 'internal_error' });
+  }
+});
+
+// Generate client portal access for Legal Cases
+router.post('/generate-legal-case-access', async (req, res) => {
+  try {
+    const { caseId, clientEmail, expiryDays = 90 } = req.body || {};
+    
+    if (!caseId) {
+      return res.status(400).json({ ok: false, error: 'Case ID is required' });
+    }
+
+    // Check legal case exists
+    const caseRes = await db.query(
+      'SELECT case_id, case_reference, case_title, client_name, client_email FROM legal_cases WHERE case_id = $1 LIMIT 1',
+      [caseId]
+    );
+    if (caseRes.rows.length === 0) {
+      return res.status(404).json({ ok: false, error: 'Legal case not found' });
+    }
+    const legalCase = caseRes.rows[0];
+
+    // Generate unique token and password
+    const token = `legal-${Date.now()}-${crypto.randomBytes(16).toString('hex')}`;
+    const password = generatePassword(8);
+    const salt = crypto.randomBytes(16).toString('hex');
+    const password_hash = hashPassword(password, salt);
+
+    // Calculate expiry date
+    const expires_at = new Date();
+    expires_at.setDate(expires_at.getDate() + expiryDays);
+
+    // Deactivate any existing access for this legal case
+    await db.query(
+      'UPDATE client_portal_access SET is_active = false WHERE legal_case_id = $1',
+      [caseId]
+    ).catch(() => {}); // Ignore if column doesn't exist yet
+
+    // Insert new access record
+    try {
+      await db.query(
+        `INSERT INTO client_portal_access (legal_case_id, access_token, password_hash, expires_at, is_active, created_at)
+         VALUES ($1, $2, $3, $4, true, NOW())`,
+        [caseId, token, salt + ':' + password_hash, expires_at]
+      );
+    } catch (dbErr) {
+      console.error('DB insert error:', dbErr);
+      // If column doesn't exist, add it
+      if (dbErr.code === '42703') {
+        await db.query('ALTER TABLE client_portal_access ADD COLUMN IF NOT EXISTS legal_case_id INTEGER');
+        await db.query(
+          `INSERT INTO client_portal_access (legal_case_id, access_token, password_hash, expires_at, is_active, created_at)
+           VALUES ($1, $2, $3, $4, true, NOW())`,
+          [caseId, token, salt + ':' + password_hash, expires_at]
+        );
+      } else {
+        throw dbErr;
+      }
+    }
+
+    // Generate the portal URL
+    const base = process.env.CLIENT_PORTAL_BASE || process.env.FRONTEND_URL || req.get('origin') || 'http://localhost:5173';
+    const portalUrl = `${base.replace(/\/$/, '')}/client-portal?token=${encodeURIComponent(token)}`;
+
+    return res.json({ 
+      ok: true, 
+      portalUrl,
+      password,
+      expires_at,
+      case_reference: legalCase.case_reference,
+      case_title: legalCase.case_title,
+      client_name: legalCase.client_name
+    });
+  } catch (err) {
+    console.error('generate-legal-case-access error', err);
     return res.status(500).json({ ok: false, error: 'internal_error' });
   }
 });

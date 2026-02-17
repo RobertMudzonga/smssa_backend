@@ -328,6 +328,58 @@ router.post('/', async (req, res) => {
     }
   });
 
+  // PATCH /api/prospects/:id/comment - add comment/note to prospect
+  router.patch('/:id/comment', async (req, res) => {
+    const { id } = req.params;
+    const { comment, user_id, user_name } = req.body;
+
+    if (!comment) {
+      return res.status(400).json({ error: 'Comment is required' });
+    }
+
+    try {
+      const prospectResult = await db.query('SELECT notes FROM prospects WHERE prospect_id = $1', [id]);
+      if (prospectResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Prospect not found' });
+      }
+
+      const existingNotes = prospectResult.rows[0].notes || '';
+      // Create structured note entry with timestamp and user info
+      const noteEntry = {
+        timestamp: new Date().toISOString(),
+        user_id: user_id || null,
+        user_name: user_name || 'System',
+        content: comment
+      };
+      
+      // Format: Append structured JSON entry to notes, separated by delimiter
+      const newNote = existingNotes 
+        ? `${existingNotes}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+        : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
+
+      const result = await db.query(
+        `UPDATE prospects SET notes = $1, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $2 RETURNING *`,
+        [newNote, id]
+      );
+
+      // Transform response to frontend shape
+      const p = result.rows[0];
+      const stageMapping = {1:'opportunity',2:'quote_requested',3:'quote_sent',4:'first_follow_up',5:'second_follow_up',6:'mid_month_follow_up',7:'month_end_follow_up',8:'next_month_follow_up',9:'discount_requested',10:'quote_accepted',11:'engagement_sent',12:'invoice_sent',13:'payment_date_confirmed',14:'won'};
+      const transformed = {
+        ...p,
+        id: p.prospect_id,
+        name: (p.deal_name && p.deal_name.trim()) || `${p.first_name||''} ${p.last_name||''}`.trim(),
+        deal_name: p.deal_name,
+        pipeline_stage: stageMapping[p.current_stage_id] || 'opportunity',
+        lead_source: p.source
+      };
+      res.json(transformed);
+    } catch (err) {
+      console.error('Error adding comment:', err);
+      res.status(500).json({ error: 'Failed to add comment' });
+    }
+  });
+
   // PATCH /api/prospects/:id - update prospect fields
   router.patch('/:id', async (req, res) => {
     const { id } = req.params;
@@ -426,12 +478,22 @@ router.post('/', async (req, res) => {
   // PATCH /api/prospects/:id/lost - mark prospect lost/archive
   router.patch('/:id/lost', async (req, res) => {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason, user_id, user_name } = req.body;
     try {
       const pRes = await db.query('SELECT notes FROM prospects WHERE prospect_id = $1', [id]);
       if (pRes.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
       const existing = pRes.rows[0].notes || '';
-      const newNotes = `${existing}\n[${new Date().toISOString()}] MARKED AS LOST: ${reason}`;
+      // Create structured note entry with timestamp and user info
+      const noteEntry = {
+        timestamp: new Date().toISOString(),
+        user_id: user_id || null,
+        user_name: user_name || 'System',
+        content: `MARKED AS LOST: ${reason}`,
+        type: 'system'
+      };
+      const newNotes = existing 
+        ? `${existing}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+        : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
       const result = await db.query('UPDATE prospects SET status = $1, notes = $2, is_archived = $3, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $4 RETURNING *', ['lost', newNotes, true, id]);
       res.json({ message: 'Prospect marked as lost and archived', prospect: result.rows[0] });
     } catch (err) {
@@ -443,11 +505,22 @@ router.post('/', async (req, res) => {
   // PATCH /api/prospects/:id/recover - recover a lost prospect
   router.patch('/:id/recover', async (req, res) => {
     const { id } = req.params;
+    const { user_id, user_name } = req.body;
     try {
       const pRes = await db.query('SELECT notes FROM prospects WHERE prospect_id = $1', [id]);
       if (pRes.rows.length === 0) return res.status(404).json({ error: 'Prospect not found' });
       const existing = pRes.rows[0].notes || '';
-      const newNotes = `${existing}\n[${new Date().toISOString()}] RECOVERED FROM LOST`;
+      // Create structured note entry with timestamp and user info
+      const noteEntry = {
+        timestamp: new Date().toISOString(),
+        user_id: user_id || null,
+        user_name: user_name || 'System',
+        content: 'RECOVERED FROM LOST',
+        type: 'system'
+      };
+      const newNotes = existing 
+        ? `${existing}\n---NOTE_ENTRY---${JSON.stringify(noteEntry)}`
+        : `---NOTE_ENTRY---${JSON.stringify(noteEntry)}`;
       const result = await db.query('UPDATE prospects SET status = $1, notes = $2, is_archived = $3, updated_at = CURRENT_TIMESTAMP WHERE prospect_id = $4 RETURNING *', ['opportunity', newNotes, false, id]);
       res.json({ message: 'Prospect recovered successfully', prospect: result.rows[0] });
     } catch (err) {
