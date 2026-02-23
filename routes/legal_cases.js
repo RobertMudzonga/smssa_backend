@@ -17,7 +17,7 @@ const { createNotification } = require('../lib/notifications');
 // CONSTANTS
 // ============================================================================
 
-const CASE_TYPES = ['overstay_appeal', 'prohibited_persons', 'high_court_expedition'];
+const CASE_TYPES = ['overstay_appeal', 'prohibited_persons', 'high_court_expedition', 'appeals_8_4', 'appeals_8_6'];
 const CASE_STATUSES = ['active', 'closed', 'lost', 'settled', 'appealing', 'on_hold'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 
@@ -46,6 +46,22 @@ const STEP_NAMES = {
         7: 'Settlement / Agreement',
         8: 'High Court',
         9: 'Complete'
+    },
+    appeals_8_4: {
+        1: 'Reach Out to Clients',
+        2: 'Prepare Appeal Draft',
+        3: 'Appointment Booked',
+        4: 'Submit Application at VFS Center',
+        5: 'Track the Application',
+        6: 'Outcome'
+    },
+    appeals_8_6: {
+        1: 'Reach Out to Clients',
+        2: 'Prepare Appeal Draft',
+        3: 'Appointment Booked',
+        4: 'Submit Application at VFS Center',
+        5: 'Track the Application',
+        6: 'Outcome'
     }
 };
 
@@ -60,7 +76,9 @@ function generateCaseReference(caseType) {
     const prefix = {
         'overstay_appeal': 'OA',
         'prohibited_persons': 'PP',
-        'high_court_expedition': 'HC'
+        'high_court_expedition': 'HC',
+        'appeals_8_4': 'A84',
+        'appeals_8_6': 'A86'
     }[caseType] || 'LC';
     
     const year = new Date().getFullYear();
@@ -124,6 +142,22 @@ function createDefaultWorkflowData(caseType) {
                 settlement_terms: null,
                 final_judgment_date: null,
                 judgment_outcome: null
+            };
+        case 'appeals_8_4':
+            return {
+                type: 'appeals_8_4',
+                appointment_booked_date: null,
+                vfs_center: null,
+                tracking_reference: null,
+                outcome_result: null
+            };
+        case 'appeals_8_6':
+            return {
+                type: 'appeals_8_6',
+                appointment_booked_date: null,
+                vfs_center: null,
+                tracking_reference: null,
+                outcome_result: null
             };
         default:
             return {};
@@ -410,6 +444,7 @@ router.post('/', async (req, res) => {
             client_id,
             assigned_case_manager_id,
             assigned_paralegal_id,
+            vfs_center,
             priority = 'medium',
             notes,
             tags = []
@@ -432,6 +467,9 @@ router.post('/', async (req, res) => {
         const caseReference = generateCaseReference(case_type);
         const stepHistory = createInitialStepHistory(case_type);
         const workflowData = createDefaultWorkflowData(case_type);
+        if ((case_type === 'appeals_8_4' || case_type === 'appeals_8_6') && vfs_center) {
+            workflowData.vfs_center = vfs_center;
+        }
         const currentStepName = STEP_NAMES[case_type][1];
         const now = new Date().toISOString();
         
@@ -859,11 +897,11 @@ router.post('/:id/outcome', async (req, res) => {
         let closedAt = null;
         
         // Handle based on case type
-        if (legalCase.case_type === 'overstay_appeal') {
+        if (legalCase.case_type === 'overstay_appeal' || legalCase.case_type === 'appeals_8_4' || legalCase.case_type === 'appeals_8_6') {
             const validOutcomes = ['approved', 'rejected', 'pending'];
             if (!validOutcomes.includes(outcome)) {
                 await client.query('ROLLBACK');
-                return res.status(400).json({ error: 'Invalid outcome for Overstay Appeal', valid_outcomes: validOutcomes });
+                return res.status(400).json({ error: 'Invalid outcome for this case type', valid_outcomes: validOutcomes });
             }
             
             workflowData.outcome_result = outcome;
@@ -895,12 +933,12 @@ router.post('/:id/outcome', async (req, res) => {
         }
         else {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'Outcome endpoint only applies to Overstay Appeal and Prohibited Persons cases' });
+            return res.status(400).json({ error: 'Outcome endpoint only applies to outcome-based case types' });
         }
         
         // Update step history
         let stepHistory = legalCase.step_history || [];
-        const outcomeStep = legalCase.case_type === 'overstay_appeal' ? 5 : 5;
+        const outcomeStep = (legalCase.case_type === 'appeals_8_4' || legalCase.case_type === 'appeals_8_6') ? 6 : 5;
         stepHistory = stepHistory.map(entry => {
             if (entry.step_id === outcomeStep) {
                 return {
