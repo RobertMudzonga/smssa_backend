@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { createNotification } = require('../lib/notifications');
+const emailService = require('../lib/emailService');
 
 console.log('Loaded routes/prospects.js');
 
@@ -452,6 +453,22 @@ router.post('/', async (req, res) => {
             related_entity_id: p.prospect_id
           });
           console.log(`Notified employee ${req.body.assigned_to} about prospect assignment`);
+
+          // Send email notification
+          const employeeRes = await db.query(
+            'SELECT full_name, work_email FROM employees WHERE id = $1',
+            [req.body.assigned_to]
+          );
+          if (employeeRes.rows.length > 0 && employeeRes.rows[0].work_email) {
+            emailService.sendAssignmentEmail({
+              to: employeeRes.rows[0].work_email,
+              assigneeName: employeeRes.rows[0].full_name,
+              entityType: 'Prospect',
+              entityName: `${prospectName}${companyInfo}`,
+              assignedBy: null,
+              link: null
+            }).catch(err => console.error('Failed to send prospect assignment email:', err));
+          }
         } catch (notifErr) {
           console.error('Error creating prospect assignment notification:', notifErr);
         }

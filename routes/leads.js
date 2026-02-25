@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { createNotification } = require('../lib/notifications');
+const emailService = require('../lib/emailService');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 
 // --- 1. GET ALL LEADS (List/Kanban View) ---
@@ -289,6 +290,18 @@ router.patch('/:id/assign', async (req, res) => {
             related_entity_type: 'lead',
             related_entity_id: id
         });
+
+        // Send email notification if employee has work email
+        if (employee.work_email) {
+            emailService.sendAssignmentEmail({
+                to: employee.work_email,
+                assigneeName: employee.full_name,
+                entityType: 'Lead',
+                entityName: leadName,
+                assignedBy: null,
+                link: null
+            }).catch(err => console.error('Failed to send assignment email:', err));
+        }
 
         res.json({
             message: 'Lead assigned successfully',
