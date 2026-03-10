@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { getEmployeesByRole } = require('../lib/notifications');
+const { sendNotificationEmail } = require('../lib/emailService');
 
 console.log('Loaded routes/payment_requests.js');
 
@@ -83,7 +84,7 @@ router.post('/', async (req, res) => {
             accountant.id,
             'payment_request',
             `${urgencyPrefix}New ${urgencyLabel}Payment Request`,
-            `${requesterName} submitted a payment request for ZWL ${amount.toLocaleString()}. ${description}.${dueInfo}`,
+            `${requesterName} submitted a payment request for R ${Number(amount).toLocaleString()}. ${description}.${dueInfo}`,
             'payment_request',
             result.rows[0].payment_request_id
           ]
@@ -114,7 +115,7 @@ router.patch('/:id/approve', async (req, res) => {
   try {
     // First get the payment request details
     const paymentRequestResult = await db.query(
-      `SELECT pr.*, e.full_name as requester_name 
+      `SELECT pr.*, e.full_name as requester_name, e.work_email as requester_email
        FROM payment_requests pr
        LEFT JOIN employees e ON pr.requester_id = e.id
        WHERE pr.payment_request_id = $1`,
@@ -151,11 +152,20 @@ router.patch('/:id/approve', async (req, res) => {
             paymentRequest.requester_id,
             'payment_request',
             'Payment Request Approved',
-            `Your payment request for ZWL ${paymentRequest.amount} has been approved and is ready for processing.`,
+            `Your payment request for R ${paymentRequest.amount} has been approved and is ready for processing.`,
             'payment_request',
             id
           ]
         );
+
+        if (paymentRequest.requester_email) {
+          await sendNotificationEmail({
+            to: paymentRequest.requester_email,
+            type: 'Payment Request',
+            title: 'Payment Request Approved',
+            message: `Your payment request for R ${Number(paymentRequest.amount).toLocaleString()} has been approved and is ready for processing.`
+          });
+        }
       }
     } catch (notifErr) {
       console.error('Error creating approval notification:', notifErr);
@@ -180,7 +190,7 @@ router.patch('/:id/reject', async (req, res) => {
   try {
     // First get the payment request details
     const paymentRequestResult = await db.query(
-      `SELECT pr.*, e.full_name as requester_name 
+      `SELECT pr.*, e.full_name as requester_name, e.work_email as requester_email
        FROM payment_requests pr
        LEFT JOIN employees e ON pr.requester_id = e.id
        WHERE pr.payment_request_id = $1`,
@@ -218,11 +228,20 @@ router.patch('/:id/reject', async (req, res) => {
             paymentRequest.requester_id,
             'payment_request',
             'Payment Request Rejected',
-            `Your payment request for ZWL ${paymentRequest.amount} has been rejected. ${reasonText}`,
+            `Your payment request for R ${paymentRequest.amount} has been rejected. ${reasonText}`,
             'payment_request',
             id
           ]
         );
+
+        if (paymentRequest.requester_email) {
+          await sendNotificationEmail({
+            to: paymentRequest.requester_email,
+            type: 'Payment Request',
+            title: 'Payment Request Rejected',
+            message: `Your payment request for R ${Number(paymentRequest.amount).toLocaleString()} has been rejected.${reasonText ? ` ${reasonText}` : ''}`
+          });
+        }
       }
     } catch (notifErr) {
       console.error('Error creating rejection notification:', notifErr);
@@ -245,6 +264,20 @@ router.patch('/:id/mark-paid', async (req, res) => {
   }
 
   try {
+    const paymentRequestResult = await db.query(
+      `SELECT pr.*, e.full_name as requester_name, e.work_email as requester_email
+       FROM payment_requests pr
+       LEFT JOIN employees e ON pr.requester_id = e.id
+       WHERE pr.payment_request_id = $1`,
+      [id]
+    );
+
+    if (paymentRequestResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Payment request not found' });
+    }
+
+    const paymentRequest = paymentRequestResult.rows[0];
+
     const result = await db.query(
       `UPDATE payment_requests 
        SET status = 'paid', paid_by = $1, paid_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP 
@@ -255,6 +288,36 @@ router.patch('/:id/mark-paid', async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Payment request not found or not approved' });
+    }
+
+    try {
+      if (paymentRequest.requester_id) {
+        await db.query(
+          `INSERT INTO notifications (
+            employee_id, type, title, message, 
+            related_entity_type, related_entity_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+          [
+            paymentRequest.requester_id,
+            'payment_request',
+            'Payment Request Paid',
+            `Your payment request for R ${paymentRequest.amount} has been marked as paid.`,
+            'payment_request',
+            id
+          ]
+        );
+
+        if (paymentRequest.requester_email) {
+          await sendNotificationEmail({
+            to: paymentRequest.requester_email,
+            type: 'Payment Request',
+            title: 'Payment Request Paid',
+            message: `Your payment request for R ${Number(paymentRequest.amount).toLocaleString()} has been marked as paid.`
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error('Error creating paid notification:', notifErr);
     }
 
     res.json(result.rows[0]);
