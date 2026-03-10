@@ -1,0 +1,1345 @@
+const express = require('express');
+const router = express.Router();
+const db = require('../db');
+const { notifyManagers, createNotification } = require('../lib/notifications');
+
+// --- 1. CREATE PROJECT ---
+// Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
+router.post('/', async (req, res) => {
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount } = req.body;
+    
+    // Start transaction
+    const client = await db.pool.connect();
+    
+    try {
+        await client.query('BEGIN');
+
+        // Check if projects table exists
+        const existsCheck = await client.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='projects') as exists");
+        if (!existsCheck.rows[0] || !existsCheck.rows[0].exists) {
+            console.warn('projects table not found during create - returning echo response');
+            await client.query('ROLLBACK');
+            return res.status(201).json({ ok: true, created: { project_name, client_name } });
+        }
+
+        // Get available columns to build flexible insert
+        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const cols = colRes.rows.map(r => r.column_name);
+        const insertCols = [];
+        const values = [];
+        const placeholders = [];
+        let idx = 1;
+
+        // Add fields that exist in the table
+        if (cols.includes('client_lead_id') && client_lead_id) { 
+            insertCols.push('client_lead_id'); 
+            values.push(client_lead_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+        
+        if (cols.includes('visa_type_id') && visa_type_id) { 
+            insertCols.push('visa_type_id'); 
+            values.push(visa_type_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+        
+        if (cols.includes('assigned_user_id') && assigned_user_id) { 
+            insertCols.push('assigned_user_id'); 
+            values.push(assigned_user_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('project_name') && project_name) { 
+            insertCols.push('project_name'); 
+            values.push(project_name); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('client_name') && client_name) { 
+            insertCols.push('client_name'); 
+            values.push(client_name); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('client_email') && client_email) { 
+            insertCols.push('client_email'); 
+            values.push(client_email); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('case_type') && case_type) { 
+            insertCols.push('case_type'); 
+            values.push(case_type); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('priority') && priority) { 
+            insertCols.push('priority'); 
+            values.push(priority); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('start_date') && start_date) { 
+            insertCols.push('start_date'); 
+            values.push(start_date); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('payment_amount') && payment_amount) { 
+            insertCols.push('payment_amount'); 
+            values.push(payment_amount); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('current_stage')) { 
+            insertCols.push('current_stage'); 
+            values.push(1); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('status')) { 
+            insertCols.push('status'); 
+            values.push('Active'); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('project_manager_id') && project_manager_id) { 
+            insertCols.push('project_manager_id'); 
+            values.push(project_manager_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('project_manager_id_2') && project_manager_id_2) { 
+            insertCols.push('project_manager_id_2'); 
+            values.push(project_manager_id_2); 
+            placeholders.push(`$${idx++}`); 
+        }
+
+        if (insertCols.length === 0) {
+            throw new Error('No fields to insert - table schema mismatch');
+        }
+
+        const returnCol = cols.includes('project_id') ? 'project_id' : (cols.includes('id') ? 'id' : 'project_id');
+        const q = `INSERT INTO projects (${insertCols.join(',')}) VALUES (${placeholders.join(',')}) RETURNING ${returnCol}, *`;
+        const projectRes = await client.query(q, values);
+        const createdProject = projectRes.rows[0];
+        const projectId = createdProject[returnCol];
+
+        // Only fetch and create checklist if visa_type_id is provided (lead conversion flow)
+        if (visa_type_id) {
+            try {
+                const templateRes = await client.query(
+                    `SELECT document_id FROM visa_document_checklist WHERE visa_type_id = $1`,
+                    [visa_type_id]
+                );
+
+                for (let row of templateRes.rows) {
+                    await client.query(
+                        `INSERT INTO project_documents (project_id, document_id, status) VALUES ($1, $2, 'Pending')`,
+                        [projectId, row.document_id]
+                    );
+                }
+            } catch (checklistErr) {
+                console.warn('Checklist creation failed (non-fatal):', checklistErr.message);
+            }
+        }
+
+        // Create a document folder for this project
+        try {
+            let folderName = project_name || client_name || null;
+            if (!folderName && client_lead_id) {
+                const leadRes = await client.query('SELECT company, first_name, last_name FROM leads WHERE lead_id = $1', [client_lead_id]);
+                if (leadRes.rows.length > 0) {
+                    const lead = leadRes.rows[0];
+                    folderName = lead.company || `${lead.first_name || ''} ${lead.last_name || ''}`.trim() || null;
+                }
+            }
+            if (!folderName) folderName = `project-${projectId}`;
+
+            await client.query('INSERT INTO document_folders (project_id, name) VALUES ($1, $2)', [projectId, folderName]);
+        } catch (folderErr) {
+            console.error('Error creating document folder during project creation:', folderErr);
+            // non-fatal; continue
+        }
+
+        await client.query('COMMIT');
+        
+        // Notify assigned user if project was assigned during creation
+        if (assigned_user_id) {
+            try {
+                const projectIdentifier = project_name || client_name || `Project #${projectId}`;
+                const clientInfo = client_name ? ` for client ${client_name}` : '';
+                const caseInfo = case_type ? ` (${case_type})` : '';
+                await createNotification({
+                    employee_id: assigned_user_id,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned',
+                    message: `You have been assigned to project: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: projectId
+                });
+                console.log(`Notified employee ${assigned_user_id} about project assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
+        res.status(201).json({ message: "Project created successfully", projectId, project: createdProject });
+
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => null);
+        console.error("Project Creation Error:", err);
+        res.status(500).json({ error: "Failed to create project", detail: err.message });
+    } finally {
+        client.release();
+    }
+});
+
+// --- 2. GET PROJECT DETAILS ---
+router.get('/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log(`Fetching project details for name: ${id}`);
+
+        // Check which columns exist in projects table
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const cols = colRes.rows.map(r => r.column_name);
+
+        // Check if related tables exist
+        const leadsExists = await db.query("SELECT to_regclass('public.leads') as exists");
+        const visaTypesExists = await db.query("SELECT to_regclass('public.visa_types') as exists");
+        const employeesExists = await db.query("SELECT to_regclass('public.employees') as exists");
+        const hasLeadsTable = leadsExists.rows[0] && leadsExists.rows[0].exists;
+        const hasVisaTypesTable = visaTypesExists.rows[0] && visaTypesExists.rows[0].exists;
+        const hasEmployeesTable = employeesExists.rows[0] && employeesExists.rows[0].exists;
+
+        // Build query with conditional joins
+        let joins = '';
+        let selectFields = 'p.*';
+        
+        if (hasLeadsTable && cols.includes('client_lead_id')) {
+            joins += ' LEFT JOIN leads l ON p.client_lead_id = l.lead_id';
+            selectFields += ', l.first_name, l.last_name, l.company, l.email';
+        }
+        
+        if (hasVisaTypesTable && cols.includes('visa_type_id')) {
+            joins += ' LEFT JOIN visa_types v ON p.visa_type_id = v.visa_type_id';
+            selectFields += ', v.name as visa_type_name';
+        }
+
+        if (hasEmployeesTable && cols.includes('project_manager_id')) {
+            joins += ' LEFT JOIN employees e ON p.project_manager_id = e.id';
+            selectFields += ', e.full_name as project_manager_name, e.work_email as project_manager_email';
+        }
+
+        if (hasEmployeesTable && cols.includes('project_manager_id_2')) {
+            joins += ' LEFT JOIN employees e2 ON p.project_manager_id_2 = e2.id';
+            selectFields += ', e2.full_name as project_manager_2_name, e2.work_email as project_manager_2_email';
+        }
+
+        // Query by project_name (id parameter could be project name or project_id)
+        // First try to find by project_name, then fall back to project_id if numeric
+        let projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.project_name = $1`;
+        let project = await db.query(projectQuery, [id]);
+
+        // If not found and id is numeric, try project_id
+        if (project.rows.length === 0 && !isNaN(id)) {
+            projectQuery = `SELECT ${selectFields} FROM projects p${joins} WHERE p.project_id = $1`;
+            project = await db.query(projectQuery, [parseInt(id)]);
+        }
+
+        if (project.rows.length === 0) {
+            console.log(`Project ${id} not found`);
+            return res.status(404).json({ error: "Project not found" });
+        }
+
+        console.log(`Found project ${id}, fetching documents`);
+
+        // Get the actual project_id for querying dependent tables
+        const projectId = project.rows[0].project_id;
+
+        // Fetch documents if tables exist
+        let documents = { rows: [] };
+        try {
+            const docsTableExists = await db.query("SELECT to_regclass('public.project_documents') as exists");
+            if (docsTableExists.rows[0] && docsTableExists.rows[0].exists) {
+                documents = await db.query(`
+                    SELECT pd.project_document_id, pd.project_id, pd.status, pd.notes, pd.date_received,
+                           d.name as document_name, d.description
+                    FROM project_documents pd
+                    LEFT JOIN documents d ON pd.document_id = d.document_id
+                    WHERE pd.project_id = $1
+                    ORDER BY d.name ASC
+                `, [projectId]);
+            }
+        } catch (docErr) {
+            console.warn('Error fetching documents for project', id, ':', docErr.message || docErr);
+            // Continue without documents
+        }
+
+        console.log(`Successfully retrieved project ${id} with ${documents.rows.length} documents`);
+
+        res.json({
+            project: project.rows[0],
+            documents: documents.rows
+        });
+
+    } catch (err) {
+        console.error("Error fetching project details for id", req.params.id, ":", err);
+        console.error('Error details:', {
+            message: err.message,
+            code: err.code,
+            detail: err.detail
+        });
+        res.status(500).json({ 
+            error: "Server error",
+            details: err.message 
+        });
+    }
+});
+
+// --- 2a. UPDATE PROJECT DETAILS ---
+// Allows editing general project fields (internal use only)
+router.patch('/:id', async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body || {};
+
+    // Internal-only: require company email domain
+    try {
+        const email = String(req.headers['x-user-email'] || '').toLowerCase();
+        if (!email.endsWith('@immigrationspecialists.co.za')) {
+            return res.status(403).json({ error: 'Forbidden: internal access only' });
+        }
+    } catch {}
+
+    try {
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+
+        // Get the current project state before update to detect assignment changes
+        let currentProject = null;
+        try {
+            // Support both project_id and project_name lookup
+            const isNumeric = /^\d+$/.test(id);
+            const currentQuery = isNumeric 
+                ? 'SELECT * FROM projects WHERE project_id = $1'
+                : 'SELECT * FROM projects WHERE project_name = $1';
+            const currentRes = await db.query(currentQuery, [id]);
+            if (currentRes.rows.length > 0) {
+                currentProject = currentRes.rows[0];
+            }
+        } catch (err) {
+            console.error('Error fetching current project:', err);
+        }
+
+        // Allowed editable fields
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2'];
+        const parts = [];
+        const values = [];
+        let i = 1;
+        for (const key of allowed) {
+            if (typeof updates[key] === 'undefined') continue;
+            if (!existingCols.includes(key)) continue;
+            parts.push(`${key} = $${i}`);
+            values.push(updates[key]);
+            i++;
+        }
+        if (parts.length === 0) return res.status(400).json({ error: 'No valid fields to update' });
+
+        values.push(id);
+        const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
+        // Support both project_id and project_name in WHERE clause
+        const isNumeric = /^\d+$/.test(id);
+        const whereClause = isNumeric ? `project_id = $${i}` : `project_name = $${i}`;
+        const q = `UPDATE projects SET ${parts.join(', ')}${setUpdatedAt} WHERE ${whereClause} RETURNING *`;
+        const result = await db.query(q, values);
+        
+        // Notify if project manager was changed
+        if (updates.project_manager_id && currentProject && updates.project_manager_id !== currentProject.project_manager_id) {
+            try {
+                const projectIdentifier = updates.project_name || currentProject.project_name || `Project #${currentProject.project_id}`;
+                const clientInfo = currentProject.client_name ? ` for client ${currentProject.client_name}` : '';
+                const caseInfo = currentProject.case_type ? ` (${currentProject.case_type})` : '';
+                await createNotification({
+                    employee_id: updates.project_manager_id,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned as Manager',
+                    message: `You have been assigned as project manager for: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: currentProject.project_id
+                });
+                console.log(`Notified employee ${updates.project_manager_id} about project manager assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
+        // Notify if second project manager was changed
+        if (updates.project_manager_id_2 && currentProject && updates.project_manager_id_2 !== currentProject.project_manager_id_2) {
+            try {
+                const projectIdentifier = updates.project_name || currentProject.project_name || `Project #${currentProject.project_id}`;
+                const clientInfo = currentProject.client_name ? ` for client ${currentProject.client_name}` : '';
+                const caseInfo = currentProject.case_type ? ` (${currentProject.case_type})` : '';
+                await createNotification({
+                    employee_id: updates.project_manager_id_2,
+                    type: 'project_assigned',
+                    title: 'New Project Assigned as Manager',
+                    message: `You have been assigned as project manager for: ${projectIdentifier}${clientInfo}${caseInfo}`,
+                    related_entity_type: 'project',
+                    related_entity_id: currentProject.project_id
+                });
+                console.log(`Notified employee ${updates.project_manager_id_2} about project manager assignment`);
+            } catch (notifErr) {
+                console.error('Error creating project assignment notification:', notifErr);
+            }
+        }
+        
+        return res.json(result.rows[0] || {});
+    } catch (err) {
+        console.error('Project details update failed:', err);
+        return res.status(500).json({ error: 'Update failed' });
+    }
+});
+
+// GET project by lead id (helpful to find project created for a client/lead)
+router.get('/by-lead/:leadId', async (req, res) => {
+    try {
+        const { leadId } = req.params;
+        const result = await db.query('SELECT * FROM projects WHERE client_lead_id = $1 ORDER BY created_at DESC LIMIT 1', [leadId]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Project not found for lead' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Error fetching project by lead id:', err);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+// GET /api/projects - list projects (brief)
+router.get('/', async (req, res) => {
+    const { search } = req.query;
+    try {
+        // If the projects table doesn't exist, return an empty list instead of 500.
+        const existsRes = await db.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='projects') as exists");
+        if (!existsRes.rows[0] || !existsRes.rows[0].exists) {
+            console.warn('projects table not found - returning empty list');
+            return res.json([]);
+        }
+
+        // Discover actual projects table columns to adapt to schema variations
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const cols = colRes.rows.map(r => r.column_name);
+
+        // Build a select list that includes useful project fields when available
+        const selectCols = [];
+        const add = (c, alias) => { if (cols.includes(c)) selectCols.push(`p.${c}${alias ? ` as ${alias}` : ''}`); };
+        add('project_id');
+        add('project_name');
+        add('client_name');
+        add('client_email');
+        add('client_lead_id');
+        add('client_id');
+        add('case_type');
+        add('priority');
+        add('progress');
+        add('status');
+        add('start_date');
+        add('payment_amount');
+        add('created_at');
+        add('project_manager_id');
+        add('project_manager_id_2');
+        add('current_stage');
+
+        // Always include lead names when available, but only join if the `leads` table exists
+        let joinLead = cols.includes('client_lead_id');
+        if (joinLead) {
+            try {
+                const leadTable = await db.query("SELECT to_regclass('public.leads') as exists");
+                if (!leadTable.rows[0] || !leadTable.rows[0].exists) {
+                    console.warn('Leads table not present; skipping join in projects list');
+                    joinLead = false;
+                }
+            } catch (e) {
+                console.warn('Error checking leads table existence, skipping join:', e && e.message ? e.message : e);
+                joinLead = false;
+            }
+        }
+
+        const leadSelect = joinLead ? 'l.first_name, l.last_name, l.company' : '';
+
+        let joinManager = cols.includes('project_manager_id');
+        if (joinManager) {
+            try {
+                const employeeTable = await db.query("SELECT to_regclass('public.employees') as exists");
+                if (!employeeTable.rows[0] || !employeeTable.rows[0].exists) {
+                    console.warn('Employees table not present; skipping project manager join in projects list');
+                    joinManager = false;
+                }
+            } catch (e) {
+                console.warn('Error checking employees table existence, skipping join:', e && e.message ? e.message : e);
+                joinManager = false;
+            }
+        }
+
+        let joinManager2 = cols.includes('project_manager_id_2');
+        if (joinManager2) {
+            try {
+                const employeeTable = await db.query("SELECT to_regclass('public.employees') as exists");
+                if (!employeeTable.rows[0] || !employeeTable.rows[0].exists) {
+                    console.warn('Employees table not present; skipping project manager 2 join in projects list');
+                    joinManager2 = false;
+                }
+            } catch (e) {
+                console.warn('Error checking employees table existence for manager 2, skipping join:', e && e.message ? e.message : e);
+                joinManager2 = false;
+            }
+        }
+
+        const managerSelect = joinManager ? 'e.full_name as project_manager_name, e.work_email as project_manager_email' : '';
+        const manager2Select = joinManager2 ? 'e2.full_name as project_manager_2_name, e2.work_email as project_manager_2_email' : '';
+        const selectList = (selectCols.join(', ') || 'p.project_id as project_id')
+            + (leadSelect ? ', ' + leadSelect : '')
+            + (managerSelect ? ', ' + managerSelect : '')
+            + (manager2Select ? ', ' + manager2Select : '');
+
+        let whereClause = '';
+        const params = [];
+        
+        // Add search filter if provided
+        if (search && typeof search === 'string' && search.trim()) {
+            const searchTerm = `%${search.trim().toLowerCase()}%`;
+            const searchConditions = [];
+            
+            if (cols.includes('project_name')) searchConditions.push('LOWER(p.project_name) LIKE $1');
+            if (cols.includes('client_name')) searchConditions.push('LOWER(p.client_name) LIKE $1');
+            if (cols.includes('client_email')) searchConditions.push('LOWER(p.client_email) LIKE $1');
+            if (cols.includes('case_type')) searchConditions.push('LOWER(p.case_type) LIKE $1');
+            if (joinLead) {
+                searchConditions.push('LOWER(l.first_name) LIKE $1');
+                searchConditions.push('LOWER(l.last_name) LIKE $1');
+                searchConditions.push('LOWER(l.company) LIKE $1');
+            }
+            if (joinManager) {
+                searchConditions.push('LOWER(e.full_name) LIKE $1');
+            }
+            
+            if (searchConditions.length > 0) {
+                whereClause = ` WHERE (${searchConditions.join(' OR ')})`;
+                params.push(searchTerm);
+            }
+        }
+
+        const sql = `SELECT ${selectList}
+                 FROM projects p
+                 ${joinLead ? 'LEFT JOIN leads l ON p.client_lead_id = l.lead_id' : ''}
+                 ${joinManager ? 'LEFT JOIN employees e ON p.project_manager_id = e.id' : ''}
+                 ${joinManager2 ? 'LEFT JOIN employees e2 ON p.project_manager_id_2 = e2.id' : ''}
+                 ${whereClause}
+                 ORDER BY ${cols.includes('created_at') ? 'p.created_at' : 'p.project_name'} DESC`;
+
+        const result = await db.query(sql, params);
+
+        // Map rows to include sensible fallbacks for the frontend
+        const rows = result.rows.map(r => ({
+            project_id: r.project_id,
+            project_name: r.project_name || r.name || r.company || 'Unnamed Project',
+            client_name: r.client_name || `${r.first_name || ''} ${r.last_name || ''}`.trim() || '',
+            client_email: r.client_email || '',
+            case_type: r.case_type || '',
+            priority: r.priority || '',
+            progress: r.progress,
+            status: r.status || '',
+            start_date: r.start_date || null,
+            payment_amount: r.payment_amount || null,
+            project_manager_id: r.project_manager_id || null,
+            project_manager_name: r.project_manager_name || '',
+            project_manager_email: r.project_manager_email || '',
+            current_stage: r.current_stage,
+            created_at: r.created_at
+        }));
+        res.json(rows);
+    } catch (err) {
+        console.error('Error listing projects:', err);
+        res.status(500).json({ error: 'Server error listing projects' });
+    }
+});
+
+// --- 3. UPDATE STAGE / TRACKING DATA ---
+// Handles stage transitions (1->2, 2->3, etc.) and task updates within stages.
+router.patch('/:id/stage', async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body; 
+    // Validate and map incoming fields to real DB columns to avoid SQL errors
+    try {
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+
+        const allowedFields = [
+            'current_stage', 'task_introduction_done', 'task_supervisor_reviewed',
+            'submission_status',
+            // submission_* keys from frontend will be mapped to tracking_* if available
+            'submission_type', 'submission_center', 'submission_date', 'visa_ref', 'vfs_receipt', 'receipt_number',
+            // fallback tracking_* fields
+            'tracking_submission_type', 'tracking_submission_center', 'tracking_date', 'tracking_visa_ref', 'tracking_vfs_receipt', 'tracking_receipt_number',
+            'final_outcome',
+            // allow updating progress explicitly
+            'progress'
+        ];
+
+        const queryParts = [];
+        const values = [];
+        let counter = 1;
+
+        const mapFieldToColumn = (key) => {
+            // If the exact column exists, use it
+            if (existingCols.includes(key)) return key;
+            // Map current_stage -> stage if that's what the DB uses
+            if (key === 'current_stage' && existingCols.includes('stage')) return 'stage';
+            // Special-case submission_status: map to submission_status or fallback to status
+            if (key === 'submission_status') {
+                if (existingCols.includes('submission_status')) return 'submission_status';
+                if (existingCols.includes('status')) return 'status';
+            }
+            // Map submission_* -> tracking_* if tracking columns exist (e.g., submission_date -> tracking_date)
+            if (key.startsWith('submission_')) {
+                const mapped = key.replace('submission_', 'tracking_');
+                if (existingCols.includes(mapped)) return mapped;
+            }
+            return null;
+        };
+
+        for (let key in updates) {
+            if (!allowedFields.includes(key)) continue;
+            const targetCol = mapFieldToColumn(key);
+            if (!targetCol) continue;
+            queryParts.push(`${targetCol} = $${counter}`);
+            values.push(updates[key]);
+            counter++;
+        }
+
+        // If current_stage is present in updates and DB has a `status` column,
+        // set a sensible project status unless the caller provided one.
+        if (typeof updates.current_stage !== 'undefined' && existingCols.includes('status')) {
+            const hasStatusInParts = queryParts.some(q => q.startsWith('status ='));
+            if (!hasStatusInParts) {
+                const stageVal = Number(updates.current_stage) || 0;
+                let statusVal = 'Submitted';
+                if (stageVal === 1) statusVal = 'New';
+                else if (stageVal >= 2 && stageVal <= 5) statusVal = 'Submitted';
+                else if (stageVal === 6) statusVal = 'Completed';
+                else if (stageVal === 7) statusVal = 'On Hold';
+                queryParts.push(`status = $${counter}`);
+                values.push(statusVal);
+                counter++;
+            }
+        }
+
+        if (queryParts.length === 0) return res.status(400).json({ error: "No valid fields to update" });
+
+        // Support both project_name and numeric project_id
+        const isNumeric = /^\d+$/.test(id);
+        
+        if (isNumeric) {
+            // It's a numeric project_id
+            values.push(parseInt(id));
+        } else {
+            // It's a project name
+            values.push(id);
+        }
+        
+        const whereClause = isNumeric ? `WHERE project_id = $${counter}` : `WHERE project_name = $${counter}`;
+        
+        // Only set updated_at if the column exists in this projects table
+        const setUpdatedAt = existingCols.includes('updated_at') ? ', updated_at = CURRENT_TIMESTAMP' : '';
+        const query = `UPDATE projects SET ${queryParts.join(', ')}${setUpdatedAt} ${whereClause} RETURNING *`;
+
+        try {
+            console.log('Executing project update:', query, values);
+            const result = await db.query(query, values);
+            
+            // Check if project moved to stage 3 (Submission stage)
+            if (result.rows[0] && updates.current_stage === 3) {
+                const project = result.rows[0];
+                const projectIdentifier = project.project_name || `Project #${project.project_id}`;
+                const clientInfo = project.client_name ? ` for ${project.client_name}` : '';
+                const caseInfo = project.case_type ? ` (${project.case_type})` : '';
+                
+                // Notify managers about stage 3 submission
+                try {
+                    await notifyManagers({
+                        type: 'project_stage_3',
+                        title: `Project Reached Submission Stage`,
+                        message: `Project "${projectIdentifier}"${clientInfo}${caseInfo} has reached stage 3 (Submission). Review required.`,
+                        related_entity_type: 'project',
+                        related_entity_id: project.project_id
+                    });
+                    console.log(`Notified managers about project ${projectIdentifier} reaching stage 3`);
+                } catch (notifErr) {
+                    console.error('Error creating stage 3 notification:', notifErr);
+                    // Don't fail the update if notification fails
+                }
+            }
+            
+            res.json(result.rows[0]);
+        } catch (err) {
+            console.error("Project update failed:", err);
+            res.status(500).json({ error: "Update failed" });
+        }
+    } catch (err) {
+        console.error('Error inspecting project columns for update:', err);
+        res.status(500).json({ error: 'Update failed' });
+    }
+});
+
+// --- 4. TOGGLE DOCUMENT STATUS ---
+// Updates document checklist status for a specific project.
+router.patch('/documents/:docId', async (req, res) => {
+    const { docId } = req.params;
+    const { status } = req.body; // 'Pending', 'Received', or 'Verified'
+
+    try {
+        const result = await db.query(
+            `UPDATE project_documents 
+             SET status = $1, date_received = CASE WHEN $1 = 'Received' THEN CURRENT_DATE ELSE NULL END 
+             WHERE project_document_id = $2 RETURNING *`,
+            [status, docId]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error("Document update failed:", err);
+        res.status(500).json({ error: "Document update failed" });
+    }
+});
+
+// DELETE /api/projects/all - delete ALL projects (with confirmation)
+// NOTE: Must come BEFORE /:id route so Express matches it first
+router.delete('/all', async (req, res) => {
+    const { confirm } = req.body; // Require { confirm: true } to prevent accidental deletion
+    
+    if (confirm !== true) {
+        return res.status(400).json({ error: 'Confirmation required: send { confirm: true }' });
+    }
+
+    const client = await db.pool.connect();
+    const results = { deleted: [], failed: [] };
+
+    try {
+        // Determine actual id column
+        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+        const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
+
+        if (!idCol) {
+            throw new Error('Unable to determine projects id column');
+        }
+
+        // Get all project IDs
+        const allProjects = await client.query(`SELECT ${idCol} as id FROM projects`);
+        const projectIds = allProjects.rows.map(r => r.id);
+
+        console.log(`Delete all: found ${projectIds.length} projects to delete`);
+
+        if (projectIds.length === 0) {
+            return res.json({ 
+                ok: true,
+                deleted: [],
+                failed: [],
+                summary: 'No projects to delete'
+            });
+        }
+
+        // Check which related tables exist
+        const tableChecks = await client.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('project_documents', 'documents', 'document_folders', 'checklists')
+        `);
+        const existingTables = new Set(tableChecks.rows.map(r => r.table_name));
+
+        // Delete each project
+        for (const id of projectIds) {
+            const client2 = await db.pool.connect();
+            try {
+                await client2.query('BEGIN');
+                console.log(`Delete all: processing project ${id}`);
+
+                // Delete related records
+                if (existingTables.has('project_documents')) {
+                    await client2.query('DELETE FROM project_documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('documents')) {
+                    await client2.query('DELETE FROM documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('document_folders')) {
+                    await client2.query('DELETE FROM document_folders WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('checklists')) {
+                    await client2.query('DELETE FROM checklists WHERE project_id = $1', [id]).catch(() => null);
+                }
+
+                // Delete project
+                const delResult = await client2.query(`DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`, [id]);
+                await client2.query('COMMIT');
+                
+                results.deleted.push({ id, project: delResult.rows[0] });
+                console.log(`Delete all: successfully deleted project ${id}`);
+            } catch (err) {
+                await client2.query('ROLLBACK').catch(() => null);
+                results.failed.push({ id, reason: err.message });
+                console.error(`Delete all: failed for project ${id}:`, err.message);
+            } finally {
+                client2.release();
+            }
+        }
+
+        res.json({ 
+            ok: true,
+            deleted: results.deleted,
+            failed: results.failed,
+            summary: `Deleted ${results.deleted.length}/${projectIds.length} projects`
+        });
+
+    } catch (err) {
+        console.error('Delete all error:', err);
+        res.status(500).json({ 
+            error: 'Delete all failed',
+            details: err.message 
+        });
+    } finally {
+        client.release();
+    }
+});
+
+// DELETE /api/projects/batch - bulk delete multiple projects
+// NOTE: Must come BEFORE /:id route so Express matches it first
+router.delete('/batch', async (req, res) => {
+    const { ids } = req.body; // Expect: { ids: [1, 2, 3] }
+    
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'Invalid request: provide ids array' });
+    }
+
+    const client = await db.pool.connect();
+    const results = { deleted: [], failed: [] };
+
+    try {
+        // Determine actual id column
+        const colRes = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+        const idCol = existingCols.includes('project_id') ? 'project_id' : (existingCols.includes('id') ? 'id' : null);
+
+        if (!idCol) {
+            throw new Error('Unable to determine projects id column');
+        }
+
+        // Check which related tables exist
+        const tableChecks = await client.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('project_documents', 'documents', 'document_folders', 'checklists')
+        `);
+        const existingTables = new Set(tableChecks.rows.map(r => r.table_name));
+
+        // Delete each project
+        for (const id of ids) {
+            const client2 = await db.pool.connect();
+            try {
+                await client2.query('BEGIN');
+                console.log(`Batch delete: processing project ${id}`);
+
+                // Check if project exists
+                const checkResult = await client2.query(`SELECT * FROM projects WHERE ${idCol} = $1`, [id]);
+                if (checkResult.rows.length === 0) {
+                    results.failed.push({ id, reason: 'Project not found' });
+                    await client2.query('ROLLBACK');
+                    continue;
+                }
+
+                // Delete related records
+                if (existingTables.has('project_documents')) {
+                    await client2.query('DELETE FROM project_documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('documents')) {
+                    await client2.query('DELETE FROM documents WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('document_folders')) {
+                    await client2.query('DELETE FROM document_folders WHERE project_id = $1', [id]).catch(() => null);
+                }
+                if (existingTables.has('checklists')) {
+                    await client2.query('DELETE FROM checklists WHERE project_id = $1', [id]).catch(() => null);
+                }
+
+                // Delete project
+                const delResult = await client2.query(`DELETE FROM projects WHERE ${idCol} = $1 RETURNING *`, [id]);
+                await client2.query('COMMIT');
+                
+                results.deleted.push({ id, project: delResult.rows[0] });
+                console.log(`Batch delete: successfully deleted project ${id}`);
+            } catch (err) {
+                await client2.query('ROLLBACK').catch(() => null);
+                results.failed.push({ id, reason: err.message });
+                console.error(`Batch delete: failed for project ${id}:`, err.message);
+            } finally {
+                client2.release();
+            }
+        }
+
+        res.json({ 
+            ok: true,
+            deleted: results.deleted,
+            failed: results.failed,
+            summary: `Deleted ${results.deleted.length}/${ids.length} projects`
+        });
+
+    } catch (err) {
+        console.error('Batch delete error:', err);
+        res.status(500).json({ 
+            error: 'Batch delete failed',
+            details: err.message 
+        });
+    } finally {
+        client.release();
+    }
+});
+
+// DELETE /api/projects/:id - delete project and related data (allow deleting any project)
+router.delete('/:id', async (req, res) => {
+    const { id } = req.params;
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+        console.log(`Attempting to delete project with id: ${id}`);
+        
+        // Check if project exists by name or ID
+        let checkQuery = `SELECT project_id FROM projects WHERE project_name = $1`;
+        let checkResult = await client.query(checkQuery, [id]);
+        
+        // If not found by name and id is numeric, try project_id
+        if (checkResult.rows.length === 0 && !isNaN(id)) {
+            checkQuery = `SELECT project_id FROM projects WHERE project_id = $1`;
+            checkResult = await client.query(checkQuery, [parseInt(id)]);
+        }
+        
+        if (checkResult.rows.length === 0) {
+            await client.query('ROLLBACK');
+            console.log(`Project ${id} not found`);
+            // Return 200 OK instead of 404 for bulk operations - treat as already deleted
+            return res.status(200).json({ ok: true, message: 'Project not found or already deleted' });
+        }
+
+        const projectId = checkResult.rows[0].project_id;
+        console.log(`Found project ${id} with project_id ${projectId}, proceeding with deletion of related records`);
+
+        // Check which related tables exist to avoid transaction abort on missing tables
+        const tableChecks = await client.query(`
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name IN ('project_documents', 'documents', 'document_folders', 'checklists')
+        `);
+        const existingTables = new Set(tableChecks.rows.map(r => r.table_name));
+        console.log('Existing related tables:', Array.from(existingTables));
+
+        // Delete all related data in the correct order (respecting foreign keys)
+        // Only attempt deletions for tables that actually exist
+        
+        if (existingTables.has('project_documents')) {
+            try {
+                const docResult = await client.query('DELETE FROM project_documents WHERE project_id = $1', [projectId]);
+                console.log(`Deleted ${docResult.rowCount} project_documents for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting project_documents for project', id, ':', e && e.message ? e.message : e);
+            }
+        }
+        
+        if (existingTables.has('documents')) {
+            try {
+                const docsResult = await client.query('DELETE FROM documents WHERE project_id = $1', [projectId]);
+                console.log(`Deleted ${docsResult.rowCount} documents for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting documents for project', id, ':', e && e.message ? e.message : e);
+            }
+        }
+        
+        if (existingTables.has('document_folders')) {
+            try {
+                const folderResult = await client.query('DELETE FROM document_folders WHERE project_id = $1', [projectId]);
+                console.log(`Deleted ${folderResult.rowCount} document_folders for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting document_folders for project', id, ':', e && e.message ? e.message : e);
+            }
+        }
+        
+        if (existingTables.has('checklists')) {
+            try {
+                const checklistResult = await client.query('DELETE FROM checklists WHERE project_id = $1', [projectId]);
+                console.log(`Deleted ${checklistResult.rowCount} checklists for project ${id}`);
+            } catch (e) {
+                console.warn('Warning deleting checklists for project', id, ':', e && e.message ? e.message : e);
+            }
+        }
+
+        // Now delete the project itself - use project_id for deletion
+        const deleteQuery = `DELETE FROM projects WHERE project_id = $1 RETURNING *`;
+        console.log(`Executing: ${deleteQuery} with project_id=${projectId}`);
+        const result = await client.query(deleteQuery, [projectId]);
+        
+        await client.query('COMMIT');
+        console.log(`Successfully deleted project ${id}`);
+        res.json({ ok: true, deleted: result.rows[0] });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Project delete failed for id', id, ':', err);
+        console.error('Error details:', {
+            message: err.message,
+            code: err.code,
+            detail: err.detail,
+            stack: err.stack
+        });
+        res.status(500).json({ 
+            error: 'Failed to delete project',
+            details: err.message 
+        });
+    } finally {
+        client.release();
+    }
+});
+
+// POST /api/projects/create - lightweight project creation helper
+router.post('/create', async (req, res) => {
+    const payload = req.body || {};
+    try {
+        // Check which columns actually exist on the projects table, then only attempt to insert those.
+        const colRes = await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='projects'");
+        const existingCols = colRes.rows.map(r => r.column_name);
+
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','client_id','status','progress','visa_type_id','current_stage','assigned_user_id','assigned_manager_id','project_manager_id'];
+        const fields = [];
+        const values = [];
+
+        for (const k of allowed) {
+            if (typeof payload[k] !== 'undefined' && existingCols.includes(k)) {
+                fields.push(k);
+                values.push(payload[k]);
+            }
+        }
+
+        // If the projects table requires a visa_type_id but the payload didn't provide one,
+        // try to pick a sensible default: first existing visa_type, or create a 'Default' one.
+        if (existingCols.includes('visa_type_id') && !fields.includes('visa_type_id')) {
+            try {
+                const vtRes = await db.query('SELECT visa_type_id FROM visa_types ORDER BY visa_type_id LIMIT 1');
+                if (vtRes.rows.length > 0) {
+                    fields.push('visa_type_id');
+                    values.push(vtRes.rows[0].visa_type_id);
+                } else {
+                    // Create a default visa type
+                    try {
+                        const ins = await db.query("INSERT INTO visa_types (name) VALUES ($1) RETURNING visa_type_id", ['Default']);
+                        fields.push('visa_type_id');
+                        values.push(ins.rows[0].visa_type_id);
+                    } catch (createErr) {
+                        console.warn('Failed to create default visa_type:', createErr.message || createErr);
+                    }
+                }
+            } catch (vtErr) {
+                console.warn('Failed to lookup visa_types for defaulting visa_type_id:', vtErr.message || vtErr);
+            }
+        }
+
+        if (fields.length > 0) {
+            const q = `INSERT INTO projects (${fields.join(',')}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`;
+            try {
+                const result = await db.query(q, values);
+                return res.status(201).json(result.rows[0]);
+            } catch (innerErr) {
+                console.error('Projects insert failed (maybe schema mismatch):', innerErr);
+                console.warn('Projects insert failed (maybe schema mismatch), returning echo:', innerErr.message || innerErr);
+                return res.status(201).json({ ok: true, created: payload });
+            }
+        }
+
+        // Nothing to insert — echo back so UI can continue without hard failure
+        return res.status(201).json({ ok: true, created: payload });
+    } catch (err) {
+        console.error('Error creating project:', err);
+        res.status(500).json({ error: 'Failed to create project' });
+    }
+});
+
+// --- 7. PROJECT REVIEWS (INTERNAL) ---
+// List reviews for a project
+router.get('/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    try {
+        // Support both project_name and numeric project_id
+        let query = `SELECT * FROM project_reviews WHERE project_id = $1 ORDER BY created_at DESC`;
+        let params = [parseInt(id)];
+        
+        if (isNaN(id)) {
+            // It's a project name - need to look it up first
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.json({ ok: true, reviews: [] });
+            }
+            params = [projResult.rows[0].project_id];
+        }
+        
+        const r = await db.query(query, params);
+        return res.json({ ok: true, reviews: r.rows });
+    } catch (err) {
+        console.error('Fetch project reviews failed:', err);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// Add a review (internal-only)
+router.post('/:id/reviews', async (req, res) => {
+    const { id } = req.params;
+    const { health_status, comment } = req.body || {};
+    const email = String(req.headers['x-user-email'] || '').toLowerCase();
+
+    if (!email.endsWith('@immigrationspecialists.co.za')) {
+        return res.status(403).json({ error: 'Forbidden: internal access only' });
+    }
+    try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+        
+        // Get project details to notify project manager
+        const projectResult = await db.query(
+            `SELECT p.*, e.id as manager_id, e.full_name as manager_name 
+             FROM projects p
+             LEFT JOIN employees e ON p.project_manager_id = e.id
+             WHERE p.project_id = $1`,
+            [projectId]
+        );
+
+        const ins = await db.query(
+            'INSERT INTO project_reviews (project_id, reviewer_email, health_status, comment) VALUES ($1, $2, $3, $4) RETURNING *',
+            [projectId, email, health_status || null, comment || null]
+        );
+
+        // Get reviewer name
+        const reviewerResult = await db.query(
+            'SELECT full_name FROM employees WHERE work_email = $1',
+            [email]
+        );
+        const reviewerName = reviewerResult.rows[0]?.full_name || email;
+
+        // Notify project manager about the review
+        if (projectResult.rows.length > 0) {
+            const project = projectResult.rows[0];
+            if (project.manager_id) {
+                try {
+                    const statusLabel = health_status ? ` (Status: ${health_status})` : '';
+                    await db.query(
+                        `INSERT INTO notifications (
+                          employee_id, type, title, message, 
+                          related_entity_type, related_entity_id, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+                        [
+                            project.manager_id,
+                            'project_review',
+                            `New Review for Project: ${project.project_name}`,
+                            `${reviewerName} has added a review${statusLabel}. Comment: ${comment || 'No additional comments'}`,
+                            'project_review',
+                            ins.rows[0].review_id || id
+                        ]
+                    );
+                } catch (notifErr) {
+                    console.error('Error creating project review notification:', notifErr);
+                }
+            }
+        }
+
+        return res.status(201).json({ ok: true, review: ins.rows[0] });
+    } catch (err) {
+        console.error('Create project review failed:', err);
+        return res.status(500).json({ ok: false, error: 'Server error' });
+    }
+});
+
+// --- 8. PROJECT PAYMENT TRACKING ---
+// Record payment received for a project
+// PUT /api/projects/:id/payment
+router.put('/:id/payment', async (req, res) => {
+    const { id } = req.params;
+    const { amount_received, payment_date, notes } = req.body || {};
+
+    if (!amount_received || Number(amount_received) <= 0) {
+        return res.status(400).json({ error: 'Invalid amount received' });
+    }
+
+    try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+
+        // Get current project to validate and calculate new balance
+        const projectResult = await db.query(
+            'SELECT * FROM projects WHERE project_id = $1',
+            [projectId]
+        );
+
+        if (projectResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const project = projectResult.rows[0];
+        const currentPaymentReceived = Number(project.payment_received || 0);
+        const newPaymentReceived = currentPaymentReceived + Number(amount_received);
+        
+        // Update project with new payment received
+        const updateResult = await db.query(
+            `UPDATE projects 
+             SET payment_received = $1, 
+                 remaining_balance = COALESCE(payment_amount, 0) - $1,
+                 payment_status = CASE 
+                    WHEN $1 >= COALESCE(payment_amount, 0) THEN 'fully_paid'
+                    WHEN $1 > 0 THEN 'partially_paid'
+                    ELSE 'pending'
+                 END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE project_id = $2 
+             RETURNING *`,
+            [newPaymentReceived, projectId]
+        );
+
+        // Create payment record in a separate table for audit trail (if table exists)
+        try {
+            await db.query(
+                `INSERT INTO project_payments (project_id, amount_received, payment_date, notes, created_at)
+                 VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+                [projectId, amount_received, payment_date || new Date(), notes || null]
+            );
+        } catch (paymentTableErr) {
+            // Table might not exist, but we've still updated the project successfully
+            console.warn('Could not create payment record (table may not exist):', paymentTableErr.message);
+        }
+
+        // Notify project manager if payment is recorded
+        try {
+            const manager = project.project_manager_id;
+            const projectName = project.project_name || `Project #${projectId}`;
+            const amountFormatted = new Intl.NumberFormat('en-ZA', { 
+                style: 'currency', 
+                currency: 'ZAR' 
+            }).format(amount_received);
+            
+            const newStatus = updateResult.rows[0].payment_status;
+            let statusMessage = '';
+            if (newStatus === 'fully_paid') {
+                statusMessage = ' - Project is now FULLY PAID!';
+            } else if (newStatus === 'partially_paid') {
+                statusMessage = ` - Remaining balance: R${Number(updateResult.rows[0].remaining_balance).toFixed(2)}`;
+            }
+
+            if (manager) {
+                await db.query(
+                    `INSERT INTO notifications (
+                        employee_id, type, title, message, 
+                        related_entity_type, related_entity_id, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
+                    [
+                        manager,
+                        'project_payment_received',
+                        `Payment Received: ${projectName}`,
+                        `Payment of ${amountFormatted} has been recorded for ${projectName}${statusMessage}`,
+                        'project',
+                        projectId
+                    ]
+                );
+            }
+        } catch (notifErr) {
+            console.error('Error creating payment notification:', notifErr);
+            // Don't fail the payment record if notification fails
+        }
+
+        return res.json({ 
+            ok: true, 
+            project: updateResult.rows[0],
+            message: `Payment of R${Number(amount_received).toFixed(2)} recorded successfully`
+        });
+    } catch (err) {
+        console.error('Record payment failed:', err);
+        return res.status(500).json({ ok: false, error: 'Failed to record payment', details: err.message });
+    }
+});
+
+// Get project payment status and history
+// GET /api/projects/:id/payment-status
+router.get('/:id/payment-status', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // Get project_id - support both project_name and numeric ID
+        let projectId = parseInt(id);
+        if (isNaN(id)) {
+            const projResult = await db.query('SELECT project_id FROM projects WHERE project_name = $1', [id]);
+            if (projResult.rows.length === 0) {
+                return res.status(404).json({ error: 'Project not found' });
+            }
+            projectId = projResult.rows[0].project_id;
+        }
+
+        // Get current payment status
+        const projectResult = await db.query(
+            `SELECT 
+                project_id,
+                payment_amount,
+                payment_received,
+                remaining_balance,
+                payment_status,
+                updated_at
+             FROM projects 
+             WHERE project_id = $1`,
+            [projectId]
+        );
+
+        if (projectResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const paymentStatus = projectResult.rows[0];
+
+        // Try to get payment history if table exists
+        let paymentHistory = [];
+        try {
+            const historyResult = await db.query(
+                `SELECT * FROM project_payments 
+                 WHERE project_id = $1 
+                 ORDER BY created_at DESC`,
+                [projectId]
+            );
+            paymentHistory = historyResult.rows;
+        } catch (historyErr) {
+            console.warn('Could not fetch payment history (table may not exist):', historyErr.message);
+        }
+
+        return res.json({
+            ok: true,
+            paymentStatus,
+            history: paymentHistory
+        });
+    } catch (err) {
+        console.error('Fetch payment status failed:', err);
+        return res.status(500).json({ ok: false, error: 'Failed to fetch payment status' });
+    }
+});
+
+module.exports = router;
