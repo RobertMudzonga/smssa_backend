@@ -52,6 +52,7 @@ const notificationsRouter = require('./routes/notifications');
 const leaveRequestsRouter = require('./routes/leave_requests');
 const submissionsRouter = require('./routes/submissions');
 const legalCasesRouter = require('./routes/legal_cases');
+const workCalendarRouter = require('./routes/work_calendar');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -76,6 +77,7 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/leave-requests', leaveRequestsRouter);
 app.use('/api/submissions', submissionsRouter);
 app.use('/api/legal-cases', legalCasesRouter);
+app.use('/api/work-calendar', workCalendarRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
