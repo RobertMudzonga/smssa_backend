@@ -6,7 +6,7 @@ const { notifyManagers, createNotification } = require('../lib/notifications');
 // --- 1. CREATE PROJECT ---
 // Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
 router.post('/', async (req, res) => {
-    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount } = req.body;
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount, corporate_client_id, status } = req.body;
     
     // Start transaction
     const client = await db.pool.connect();
@@ -91,6 +91,12 @@ router.post('/', async (req, res) => {
             placeholders.push(`$${idx++}`); 
         }
 
+        if (cols.includes('corporate_client_id') && corporate_client_id) { 
+            insertCols.push('corporate_client_id'); 
+            values.push(corporate_client_id); 
+            placeholders.push(`$${idx++}`); 
+        }
+
         if (cols.includes('current_stage')) { 
             insertCols.push('current_stage'); 
             values.push(1); 
@@ -99,7 +105,7 @@ router.post('/', async (req, res) => {
 
         if (cols.includes('status')) { 
             insertCols.push('status'); 
-            values.push('Active'); 
+            values.push(status || 'Active'); 
             placeholders.push(`$${idx++}`); 
         }
 
@@ -333,7 +339,7 @@ router.patch('/:id', async (req, res) => {
         }
 
         // Allowed editable fields
-        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2'];
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2','corporate_client_id'];
         const parts = [];
         const values = [];
         let i = 1;
@@ -416,7 +422,7 @@ router.get('/by-lead/:leadId', async (req, res) => {
 
 // GET /api/projects - list projects (brief)
 router.get('/', async (req, res) => {
-    const { search } = req.query;
+    const { search, corporate_client_id } = req.query;
     try {
         // If the projects table doesn't exist, return an empty list instead of 500.
         const existsRes = await db.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='projects') as exists");
@@ -504,26 +510,36 @@ router.get('/', async (req, res) => {
         let whereClause = '';
         const params = [];
         
+        // Add corporate_client_id filter if provided
+        if (corporate_client_id) {
+            whereClause += ` WHERE p.corporate_client_id = $${params.length + 1}`;
+            params.push(parseInt(corporate_client_id));
+        }
+        
         // Add search filter if provided
         if (search && typeof search === 'string' && search.trim()) {
             const searchTerm = `%${search.trim().toLowerCase()}%`;
             const searchConditions = [];
             
-            if (cols.includes('project_name')) searchConditions.push('LOWER(p.project_name) LIKE $1');
-            if (cols.includes('client_name')) searchConditions.push('LOWER(p.client_name) LIKE $1');
-            if (cols.includes('client_email')) searchConditions.push('LOWER(p.client_email) LIKE $1');
-            if (cols.includes('case_type')) searchConditions.push('LOWER(p.case_type) LIKE $1');
+            if (cols.includes('project_name')) searchConditions.push('LOWER(p.project_name) LIKE $' + (params.length + 1));
+            if (cols.includes('client_name')) searchConditions.push('LOWER(p.client_name) LIKE $' + (params.length + 1));
+            if (cols.includes('client_email')) searchConditions.push('LOWER(p.client_email) LIKE $' + (params.length + 1));
+            if (cols.includes('case_type')) searchConditions.push('LOWER(p.case_type) LIKE $' + (params.length + 1));
             if (joinLead) {
-                searchConditions.push('LOWER(l.first_name) LIKE $1');
-                searchConditions.push('LOWER(l.last_name) LIKE $1');
-                searchConditions.push('LOWER(l.company) LIKE $1');
+                searchConditions.push('LOWER(l.first_name) LIKE $' + (params.length + 1));
+                searchConditions.push('LOWER(l.last_name) LIKE $' + (params.length + 1));
+                searchConditions.push('LOWER(l.company) LIKE $' + (params.length + 1));
             }
             if (joinManager) {
-                searchConditions.push('LOWER(e.full_name) LIKE $1');
+                searchConditions.push('LOWER(e.full_name) LIKE $' + (params.length + 1));
             }
             
             if (searchConditions.length > 0) {
-                whereClause = ` WHERE (${searchConditions.join(' OR ')})`;
+                if (whereClause) {
+                    whereClause += ` AND (${searchConditions.join(' OR ')})`;
+                } else {
+                    whereClause = ` WHERE (${searchConditions.join(' OR ')})`;
+                }
                 params.push(searchTerm);
             }
         }

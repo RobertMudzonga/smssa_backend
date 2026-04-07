@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
+const cron = require('node-cron');
+const { processDueReminders } = require('./lib/reminderScheduler');
 
 if (process.env.NODE_ENV !== 'production') {
 	require('dotenv').config();
@@ -46,6 +48,8 @@ const functionsRouter = require('./routes/functions');
 const templatesRouter = require('./routes/templates');
 const authRouter = require('./routes/auth');
 const clientPortalRouter = require('./routes/client_portal');
+const corporateDashboardRouter = require('./routes/corporate_dashboard');
+const corporateClientsRouter = require('./routes/corporate-clients');
 const debugRouter = require('./routes/debug');
 const paymentRequestsRouter = require('./routes/payment_requests');
 const notificationsRouter = require('./routes/notifications');
@@ -53,6 +57,7 @@ const leaveRequestsRouter = require('./routes/leave_requests');
 const submissionsRouter = require('./routes/submissions');
 const legalCasesRouter = require('./routes/legal_cases');
 const workCalendarRouter = require('./routes/work_calendar');
+const employeeVisasRouter = require('./routes/employee_visas');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
@@ -71,6 +76,8 @@ app.use('/api/functions', functionsRouter);
 app.use('/api/templates', templatesRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/client-portal', clientPortalRouter);
+app.use('/api/corporate-dashboard', corporateDashboardRouter);
+app.use('/api/corporate-clients', corporateClientsRouter);
 app.use('/api/debug', debugRouter);
 app.use('/api/payment-requests', paymentRequestsRouter);
 app.use('/api/notifications', notificationsRouter);
@@ -78,6 +85,7 @@ app.use('/api/leave-requests', leaveRequestsRouter);
 app.use('/api/submissions', submissionsRouter);
 app.use('/api/legal-cases', legalCasesRouter);
 app.use('/api/work-calendar', workCalendarRouter);
+app.use('/api/employee-visas', employeeVisasRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -137,11 +145,40 @@ let server;
 
 	server = app.listen(PORT, () => {
 		console.log(`SMSSA Backend running on port ${PORT}`);
+		
+		// Initialize reminder scheduler - runs daily at 8 AM
+		let reminderJob;
+		try {
+			// Schedule cron job: 0 8 * * * = 8 AM every day
+			reminderJob = cron.schedule('0 8 * * *', async () => {
+				console.log(`[${new Date().toISOString()}] Running follow-up reminder check...`);
+				try {
+					const result = await processDueReminders();
+					console.log(`Reminder check complete: ${result.sent} sent, ${result.failed} failed`);
+				} catch (err) {
+					console.error('Error in reminder scheduler job:', err);
+				}
+			});
+			
+			console.log('✓ Follow-up reminder scheduler initialized (runs daily at 8 AM)');
+			
+			// Store the job reference for graceful shutdown
+			global.reminderJob = reminderJob;
+		} catch (err) {
+			console.error('Failed to initialize reminder scheduler:', err);
+		}
 	});
 })();
 
 function gracefulShutdown() {
 	console.log('Shutting down gracefully...');
+	
+	// Stop reminder scheduler
+	if (global.reminderJob) {
+		global.reminderJob.stop();
+		console.log('Reminder scheduler stopped');
+	}
+	
 	if (server && server.close) {
 		server.close(() => process.exit(0));
 	} else {

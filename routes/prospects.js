@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { createNotification } = require('../lib/notifications');
 const emailService = require('../lib/emailService');
+const { extractFollowUpDateFromNote, formatDateForDB } = require('../lib/dateParser');
 
 console.log('Loaded routes/prospects.js');
 
@@ -332,19 +333,20 @@ router.post('/', async (req, res) => {
   // PATCH /api/prospects/:id/comment - add comment/note to prospect
   router.patch('/:id/comment', async (req, res) => {
     const { id } = req.params;
-    const { comment, user_id, user_name } = req.body;
+    const { comment, user_id, user_name, reminder_date } = req.body;
 
     if (!comment) {
       return res.status(400).json({ error: 'Comment is required' });
     }
 
     try {
-      const prospectResult = await db.query('SELECT notes FROM prospects WHERE prospect_id = $1', [id]);
+      const prospectResult = await db.query('SELECT notes, assigned_to FROM prospects WHERE prospect_id = $1', [id]);
       if (prospectResult.rows.length === 0) {
         return res.status(404).json({ error: 'Prospect not found' });
       }
 
-      const existingNotes = prospectResult.rows[0].notes || '';
+      const prospect = prospectResult.rows[0];
+      const existingNotes = prospect.notes || '';
       // Create structured note entry with timestamp and user info
       const noteEntry = {
         timestamp: new Date().toISOString(),
@@ -363,6 +365,39 @@ router.post('/', async (req, res) => {
         [newNote, id]
       );
 
+      // Handle follow-up reminder if provided or detected from comment text
+      let parsedReminderDate = reminder_date ? new Date(reminder_date) : null;
+      
+      // If no explicit reminder_date provided, try to extract from comment
+      if (!parsedReminderDate) {
+        const extractedDate = extractFollowUpDateFromNote(comment);
+        if (extractedDate) {
+          parsedReminderDate = extractedDate;
+        }
+      }
+
+      // If a reminder date was found, create a follow-up reminder record
+      if (parsedReminderDate && prospect.assigned_to) {
+        try {
+          // Get the assigned employee's work email
+          const userResult = await db.query('SELECT work_email FROM employees WHERE id = $1', [prospect.assigned_to]);
+          if (userResult.rows.length > 0) {
+            const userEmail = userResult.rows[0].work_email;
+            const formattedDate = formatDateForDB(parsedReminderDate);
+            
+            await db.query(
+              `INSERT INTO follow_up_reminders (prospect_id, lead_id, entity_type, assigned_user_id, assigned_user_email, reminder_date, note_content, status, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT DO NOTHING`,
+              [id, null, 'prospect', prospect.assigned_to, userEmail, formattedDate, comment, 'pending', user_id]
+            );
+          }
+        } catch (reminderErr) {
+          console.error('Error creating follow-up reminder:', reminderErr);
+          // Don't fail the comment creation if reminder creation fails
+        }
+      }
+
       // Transform response to frontend shape
       const p = result.rows[0];
       const stageMapping = {1:'opportunity',2:'quote_requested',3:'quote_sent',4:'first_follow_up',5:'second_follow_up',6:'mid_month_follow_up',7:'month_end_follow_up',8:'next_month_follow_up',9:'discount_requested',10:'quote_accepted',11:'engagement_sent',12:'invoice_sent',13:'payment_date_confirmed',14:'won'};
@@ -372,12 +407,37 @@ router.post('/', async (req, res) => {
         name: (p.deal_name && p.deal_name.trim()) || `${p.first_name||''} ${p.last_name||''}`.trim(),
         deal_name: p.deal_name,
         pipeline_stage: stageMapping[p.current_stage_id] || 'opportunity',
-        lead_source: p.source
+        lead_source: p.source,
+        reminder_date: parsedReminderDate ? formatDateForDB(parsedReminderDate) : null
       };
       res.json(transformed);
     } catch (err) {
       console.error('Error adding comment:', err);
       res.status(500).json({ error: 'Failed to add comment' });
+    }
+  });
+
+  // GET /api/prospects/:id/reminders - get follow-up reminders for a prospect
+  router.get('/:id/reminders', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.query;
+
+    try {
+      let query = 'SELECT * FROM follow_up_reminders WHERE prospect_id = $1';
+      const params = [id];
+
+      if (status) {
+        query += ' AND status = $2';
+        params.push(status);
+      }
+
+      query += ' ORDER BY reminder_date ASC';
+
+      const result = await db.query(query, params);
+      res.json(result.rows);
+    } catch (err) {
+      console.error('Error fetching reminders:', err);
+      res.status(500).json({ error: 'Failed to fetch reminders' });
     }
   });
 

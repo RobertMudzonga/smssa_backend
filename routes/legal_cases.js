@@ -195,6 +195,7 @@ router.get('/', async (req, res) => {
             search,
             has_deadline_before,
             is_overdue,
+            corporate_client_id,
             limit = 100,
             offset = 0
         } = req.query;
@@ -210,6 +211,11 @@ router.get('/', async (req, res) => {
         `;
         const params = [];
         let paramIdx = 1;
+        
+        if (corporate_client_id) {
+            query += ` AND lc.corporate_client_id = $${paramIdx++}`;
+            params.push(parseInt(corporate_client_id));
+        }
         
         if (case_type) {
             const types = Array.isArray(case_type) ? case_type : [case_type];
@@ -274,6 +280,10 @@ router.get('/', async (req, res) => {
             const types = Array.isArray(case_type) ? case_type : [case_type];
             countQuery += ` AND lc.case_type = ANY($${countIdx++})`;
             countParams.push(types);
+        }
+        if (corporate_client_id) {
+            countQuery += ` AND lc.corporate_client_id = $${countIdx++}`;
+            countParams.push(parseInt(corporate_client_id));
         }
         if (case_status) {
             const statuses = Array.isArray(case_status) ? case_status : [case_status];
@@ -444,10 +454,13 @@ router.post('/', async (req, res) => {
             client_id,
             assigned_case_manager_id,
             assigned_paralegal_id,
+            corporate_client_id,
             vfs_center,
             priority = 'medium',
             notes,
-            tags = []
+            tags = [],
+            case_status = 'active',
+            next_deadline
         } = req.body;
         
         // Validate case type
@@ -478,16 +491,18 @@ router.post('/', async (req, res) => {
                 case_reference, case_type, case_title, case_status,
                 client_id, client_name, client_email, client_phone,
                 assigned_case_manager_id, assigned_paralegal_id,
-                current_step, current_step_name, step_history, workflow_data,
-                priority, notes, tags, started_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                corporate_client_id, current_step, current_step_name,
+                step_history, workflow_data, priority, notes, tags,
+                started_at, next_deadline
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             RETURNING *
         `, [
-            caseReference, case_type, case_title, 'active',
+            caseReference, case_type, case_title, case_status,
             client_id || null, client_name, client_email || null, client_phone || null,
             assigned_case_manager_id || null, assigned_paralegal_id || null,
-            1, currentStepName, JSON.stringify(stepHistory), JSON.stringify(workflowData),
-            priority, notes || null, tags, now
+            corporate_client_id || null, 1, currentStepName, JSON.stringify(stepHistory),
+            JSON.stringify(workflowData), priority, notes || null, tags, now,
+            next_deadline || null
         ]);
         
         const newCase = result.rows[0];
@@ -540,10 +555,12 @@ router.patch('/:id', async (req, res) => {
             client_phone,
             assigned_case_manager_id,
             assigned_paralegal_id,
+            corporate_client_id,
             priority,
             notes,
             tags,
-            case_status
+            case_status,
+            next_deadline
         } = req.body;
         
         // Build dynamic update query
@@ -575,6 +592,10 @@ router.patch('/:id', async (req, res) => {
             updates.push(`assigned_paralegal_id = $${paramIdx++}`);
             values.push(assigned_paralegal_id);
         }
+        if (corporate_client_id !== undefined) {
+            updates.push(`corporate_client_id = $${paramIdx++}`);
+            values.push(corporate_client_id);
+        }
         if (priority !== undefined) {
             if (!PRIORITIES.includes(priority)) {
                 return res.status(400).json({ error: 'Invalid priority', valid_priorities: PRIORITIES });
@@ -590,6 +611,10 @@ router.patch('/:id', async (req, res) => {
             updates.push(`tags = $${paramIdx++}`);
             values.push(tags);
         }
+        if (next_deadline !== undefined) {
+            updates.push(`next_deadline = $${paramIdx++}`);
+            values.push(next_deadline);
+        }
         if (case_status !== undefined) {
             if (!CASE_STATUSES.includes(case_status)) {
                 return res.status(400).json({ error: 'Invalid status', valid_statuses: CASE_STATUSES });
@@ -601,6 +626,9 @@ router.patch('/:id', async (req, res) => {
                 values.push(new Date().toISOString());
             }
         }
+        
+        updates.push(`updated_at = $${paramIdx++}`);
+        values.push(new Date().toISOString());
         
         if (updates.length === 0) {
             return res.status(400).json({ error: 'No fields to update' });

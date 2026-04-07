@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../db');
 const { createNotification } = require('../lib/notifications');
 const emailService = require('../lib/emailService');
+const { extractFollowUpDateFromNote, formatDateForDB } = require('../lib/dateParser');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || null;
 
 // --- 1. GET ALL LEADS (List/Kanban View) ---
@@ -317,19 +318,20 @@ router.patch('/:id/assign', async (req, res) => {
 // --- 5. ADD COMMENT TO LEAD ---
 router.patch('/:id/comment', async (req, res) => {
     const { id } = req.params;
-    const { comment, user_id, user_name } = req.body;
+    const { comment, user_id, user_name, reminder_date } = req.body;
 
     if (!comment) {
         return res.status(400).json({ error: 'Comment is required' });
     }
 
     try {
-        const leadResult = await db.query('SELECT notes FROM leads WHERE lead_id = $1', [id]);
+        const leadResult = await db.query('SELECT notes, assigned_user_id FROM leads WHERE lead_id = $1', [id]);
         if (leadResult.rows.length === 0) {
             return res.status(404).json({ error: 'Lead not found' });
         }
 
-        const existingNotes = leadResult.rows[0].notes || '';
+        const lead = leadResult.rows[0];
+        const existingNotes = lead.notes || '';
         // Create structured note entry with timestamp and user info
         const noteEntry = {
             timestamp: new Date().toISOString(),
@@ -348,10 +350,69 @@ router.patch('/:id/comment', async (req, res) => {
             [newNote, id]
         );
 
-        res.json(result.rows[0]);
+        // Handle follow-up reminder if provided or detected from comment text
+        let parsedReminderDate = reminder_date ? new Date(reminder_date) : null;
+        
+        // If no explicit reminder_date provided, try to extract from comment
+        if (!parsedReminderDate) {
+            const extractedDate = extractFollowUpDateFromNote(comment);
+            if (extractedDate) {
+                parsedReminderDate = extractedDate;
+            }
+        }
+
+        // If a reminder date was found, create a follow-up reminder record
+        if (parsedReminderDate && lead.assigned_user_id) {
+            try {
+                // Get the assigned employee's work email
+                const userResult = await db.query('SELECT work_email FROM employees WHERE id = $1', [lead.assigned_user_id]);
+                if (userResult.rows.length > 0) {
+                    const userEmail = userResult.rows[0].work_email;
+                    const formattedDate = formatDateForDB(parsedReminderDate);
+                    
+                    await db.query(
+                        `INSERT INTO follow_up_reminders (prospect_id, lead_id, entity_type, assigned_user_id, assigned_user_email, reminder_date, note_content, status, created_by)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                         ON CONFLICT DO NOTHING`,
+                        [null, id, 'lead', lead.assigned_user_id, userEmail, formattedDate, comment, 'pending', user_id]
+                    );
+                }
+            } catch (reminderErr) {
+                console.error('Error creating follow-up reminder:', reminderErr);
+                // Don't fail the comment creation if reminder creation fails
+            }
+        }
+
+        const responseData = result.rows[0];
+        responseData.reminder_date = parsedReminderDate ? formatDateForDB(parsedReminderDate) : null;
+        res.json(responseData);
     } catch (err) {
         console.error('Error adding comment:', err);
         res.status(500).json({ error: 'Failed to add comment' });
+    }
+});
+
+// --- 5b. GET REMINDERS FOR LEAD ---
+router.get('/:id/reminders', async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.query;
+
+    try {
+        let query = 'SELECT * FROM follow_up_reminders WHERE lead_id = $1';
+        const params = [id];
+
+        if (status) {
+            query += ' AND status = $2';
+            params.push(status);
+        }
+
+        query += ' ORDER BY reminder_date ASC';
+
+        const result = await db.query(query, params);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Error fetching reminders:', err);
+        res.status(500).json({ error: 'Failed to fetch reminders' });
     }
 });
 
