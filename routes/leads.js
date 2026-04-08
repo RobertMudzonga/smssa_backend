@@ -92,6 +92,57 @@ router.get('/', async (req, res) => {
     }
 });
 
+// --- 2b. CLEAR ALL LEADS (Bulk mark as lost) - Must come BEFORE /:id route ---
+router.patch('/clear-all', async (req, res) => {
+    const { user_id, user_name } = req.body;
+    const reason = 'does not qualify';
+
+    try {
+        // Fetch all active (non-archived, non-converted) leads
+        const activeLeads = await db.query(
+            `SELECT lead_id, notes FROM leads WHERE (is_archived IS NOT TRUE OR is_archived IS NULL) AND (converted IS NOT TRUE OR converted IS NULL)`
+        );
+
+        if (activeLeads.rows.length === 0) {
+            return res.json({ message: 'No active leads to clear.', count: 0 });
+        }
+
+        const timestamp = new Date().toISOString();
+        const noteEntry = JSON.stringify({
+            timestamp,
+            user_id: user_id || null,
+            user_name: user_name || 'System',
+            content: `MARKED AS LOST: ${reason}`,
+            type: 'system'
+        });
+
+        // Bulk update: append note + archive all active leads
+        const result = await db.query(
+            `UPDATE leads
+             SET notes = CASE
+                 WHEN notes IS NULL OR notes = '' THEN $1
+                 ELSE notes || $2 || $1
+             END,
+             is_archived = TRUE,
+             converted = FALSE,
+             cold_lead_stage = NULL,
+             updated_at = CURRENT_TIMESTAMP
+             WHERE (is_archived IS NOT TRUE OR is_archived IS NULL)
+               AND (converted IS NOT TRUE OR converted IS NULL)
+             RETURNING lead_id`,
+            [
+                `---NOTE_ENTRY---${noteEntry}`,
+                '\n'
+            ]
+        );
+
+        res.json({ message: `Cleared ${result.rowCount} lead(s) and marked as lost.`, count: result.rowCount });
+    } catch (err) {
+        console.error('Error clearing all leads:', err);
+        res.status(500).json({ error: 'Failed to clear all leads', detail: err.message });
+    }
+});
+
 // --- 2. GET ALL LOST LEADS (Archived/Lost) - Must come BEFORE /:id route ---
 router.get('/lost/list', async (req, res) => {
     try {
