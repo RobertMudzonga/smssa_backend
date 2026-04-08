@@ -93,9 +93,27 @@ router.get('/', async (req, res) => {
 });
 
 // --- 2b. CLEAR ALL LEADS (Bulk mark as lost) - Must come BEFORE /:id route ---
+// Restricted to super admins only
 router.patch('/clear-all', async (req, res) => {
     const { user_id, user_name } = req.body;
     const reason = 'does not qualify';
+
+    // --- Super Admin Guard ---
+    if (!user_id) {
+        return res.status(403).json({ error: 'Forbidden: user_id is required.' });
+    }
+    try {
+        const adminCheck = await db.query(
+            'SELECT is_super_admin FROM employees WHERE id = $1 LIMIT 1',
+            [user_id]
+        );
+        if (adminCheck.rows.length === 0 || !adminCheck.rows[0].is_super_admin) {
+            return res.status(403).json({ error: 'Forbidden: Super admin access required.' });
+        }
+    } catch (authErr) {
+        console.error('Error verifying super admin status:', authErr);
+        return res.status(500).json({ error: 'Failed to verify permissions.' });
+    }
 
     try {
         // Fetch all active (non-archived, non-converted) leads
