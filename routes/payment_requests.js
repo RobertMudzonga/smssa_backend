@@ -15,7 +15,8 @@ router.get('/', async (req, res) => {
         pr.amount,
         pr.description,
         pr.due_date,
-        pr.is_urgent,
+        pr.priority,
+        pr.comment,
         pr.status,
         pr.approved_at,
         pr.paid_at,
@@ -29,7 +30,12 @@ router.get('/', async (req, res) => {
       FROM payment_requests pr
       LEFT JOIN employees e ON pr.requester_id = e.id
       ORDER BY 
-        CASE WHEN pr.is_urgent THEN 0 ELSE 1 END,
+        CASE pr.priority
+          WHEN 'High Priority' THEN 0
+          WHEN 'Medium Priority' THEN 1
+          WHEN 'Low Priority' THEN 2
+          ELSE 3
+        END,
         pr.due_date ASC,
         pr.created_at DESC
     `);
@@ -43,12 +49,18 @@ router.get('/', async (req, res) => {
 
 // POST /api/payment-requests - create a payment request
 router.post('/', async (req, res) => {
-  const { amount, description, due_date, is_urgent = false, requester_id } = req.body;
+  const { amount, description, due_date, priority = 'Medium Priority', comment, requester_id } = req.body;
 
-  console.log('Creating payment request:', { amount, description, due_date, is_urgent, requester_id });
+  console.log('Creating payment request:', { amount, description, due_date, priority, comment, requester_id });
 
   if (!amount || !description || !due_date || !requester_id) {
     return res.status(400).json({ error: 'Missing required fields: amount, description, due_date, requester_id' });
+  }
+
+  // Validate priority
+  const validPriorities = ['High Priority', 'Medium Priority', 'Low Priority'];
+  if (!validPriorities.includes(priority)) {
+    return res.status(400).json({ error: 'Invalid priority value. Must be: High Priority, Medium Priority, or Low Priority' });
   }
 
   try {
@@ -60,18 +72,17 @@ router.post('/', async (req, res) => {
     const requesterName = requesterResult.rows[0]?.full_name || 'Unknown Employee';
 
     const result = await db.query(
-      `INSERT INTO payment_requests (requester_id, amount, description, due_date, is_urgent, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `INSERT INTO payment_requests (requester_id, amount, description, due_date, priority, comment, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        RETURNING *`,
-      [requester_id, amount, description, due_date, is_urgent]
+      [requester_id, amount, description, due_date, priority, comment || null]
     );
     console.log('Payment request created:', result.rows[0]);
 
     // Notify all accountants about the new payment request
     try {
       const accountants = await getEmployeesByRole('accountant');
-      const urgencyLabel = is_urgent ? 'URGENT ' : '';
-      const urgencyPrefix = is_urgent ? '🔴 ' : '';
+      const priorityEmoji = priority === 'High Priority' ? '🔴' : priority === 'Medium Priority' ? '🟠' : '🔵';
       const dueInfo = due_date ? ` Due: ${new Date(due_date).toLocaleDateString()}` : '';
       
       for (const accountant of accountants) {
@@ -83,7 +94,7 @@ router.post('/', async (req, res) => {
           [
             accountant.id,
             'payment_request',
-            `${urgencyPrefix}New ${urgencyLabel}Payment Request`,
+            `${priorityEmoji} New Payment Request (${priority})`,
             `${requesterName} submitted a payment request for R ${Number(amount).toLocaleString()}. ${description}.${dueInfo}`,
             'payment_request',
             result.rows[0].payment_request_id
