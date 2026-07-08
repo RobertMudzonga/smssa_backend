@@ -6,7 +6,7 @@ const { notifyManagers, createNotification } = require('../lib/notifications');
 // --- 1. CREATE PROJECT ---
 // Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
 router.post('/', async (req, res) => {
-    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount, corporate_client_id, status } = req.body;
+    const { client_lead_id, visa_type_id, assigned_user_id, project_manager_id, project_manager_id_2, project_name, client_name, client_email, case_type, priority, start_date, payment_amount, corporate_client_id, status, sharepoint_folder_url } = req.body;
     
     // Start transaction
     const client = await db.pool.connect();
@@ -89,6 +89,12 @@ router.post('/', async (req, res) => {
             insertCols.push('payment_amount'); 
             values.push(payment_amount); 
             placeholders.push(`$${idx++}`); 
+        }
+
+        if (cols.includes('sharepoint_folder_url') && sharepoint_folder_url) {
+            insertCols.push('sharepoint_folder_url');
+            values.push(sharepoint_folder_url);
+            placeholders.push(`$${idx++}`);
         }
 
         if (cols.includes('corporate_client_id') && corporate_client_id) { 
@@ -339,7 +345,7 @@ router.patch('/:id', async (req, res) => {
         }
 
         // Allowed editable fields
-        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2','corporate_client_id'];
+        const allowed = ['project_name','client_name','client_email','case_type','priority','start_date','payment_amount','status','project_manager_id','project_manager_id_2','corporate_client_id','sharepoint_folder_url'];
         const parts = [];
         const values = [];
         let i = 1;

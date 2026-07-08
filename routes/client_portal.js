@@ -143,12 +143,18 @@ router.post('/login', async (req, res) => {
       );
       entityData = caseRes.rows?.[0] || null;
     } else {
-      // Get project details
+      // Get project details with SharePoint folder fallback
       const projectRes = await db.query(
-        'SELECT * FROM projects WHERE project_id = $1 LIMIT 1',
+        `SELECT p.*, cc.sharepoint_folder_url AS corporate_sharepoint_folder_url
+         FROM projects p
+         LEFT JOIN corporate_clients cc ON p.corporate_client_id = cc.corporate_id
+         WHERE p.project_id = $1 LIMIT 1`,
         [access.project_id]
       );
       entityData = projectRes.rows?.[0] || null;
+      if (entityData) {
+        entityData.sharepoint_folder_url = entityData.sharepoint_folder_url || entityData.corporate_sharepoint_folder_url || null;
+      }
     }
 
     // Generate a session token for subsequent requests
@@ -201,15 +207,23 @@ router.get('/validate', async (req, res) => {
         };
       }
     } else {
-      // Load project info
-      const p = await db.query('SELECT project_id, project_name, client_name FROM projects WHERE project_id=$1 LIMIT 1', [access.project_id]);
+      // Load project info and project SharePoint settings, fallback to corporate client folder when available
+      const p = await db.query(
+        `SELECT p.project_id, p.project_name, p.client_name, p.sharepoint_folder_url,
+                cc.sharepoint_folder_url AS corporate_sharepoint_folder_url
+         FROM projects p
+         LEFT JOIN corporate_clients cc ON p.corporate_client_id = cc.corporate_id
+         WHERE p.project_id=$1 LIMIT 1`,
+        [access.project_id]
+      );
       const project = p.rows?.[0] || null;
       if (project) {
         entityInfo = {
           type: 'project',
           project_id: project.project_id,
           project_name: project.project_name,
-          client_name: project.client_name
+          client_name: project.client_name,
+          sharepoint_folder_url: project.sharepoint_folder_url || project.corporate_sharepoint_folder_url || null
         };
       }
     }
@@ -320,16 +334,20 @@ router.get('/progress', async (req, res) => {
     } else {
       // Handle regular project progress
       const projectRes = await db.query(
-        `SELECT project_id, project_name, client_name, status, 
-                current_stage, stage, progress, visa_type, case_type,
-                submission_status, start_date, created_at
-         FROM projects WHERE project_id = $1`,
+        `SELECT p.project_id, p.project_name, p.client_name, p.status, 
+                p.current_stage, p.stage, p.progress, p.visa_type, p.case_type,
+                p.submission_status, p.start_date, p.created_at,
+                p.sharepoint_folder_url, cc.sharepoint_folder_url AS corporate_sharepoint_folder_url
+         FROM projects p
+         LEFT JOIN corporate_clients cc ON p.corporate_client_id = cc.corporate_id
+         WHERE p.project_id = $1`,
         [access.project_id]
       );
       const project = projectRes.rows[0] || null;
       if (!project) {
         return res.status(404).json({ error: 'Project not found' });
       }
+      const sharepointFolderUrl = project.sharepoint_folder_url || project.corporate_sharepoint_folder_url || null;
 
       // Calculate stage information
       const stageNum = Number(project.current_stage ?? project.stage ?? 1);
@@ -364,7 +382,8 @@ router.get('/progress', async (req, res) => {
           visa_type: project.visa_type || project.case_type,
           submission_status: project.submission_status,
           start_date: project.start_date,
-          progress
+          progress,
+          sharepoint_folder_url: sharepointFolderUrl
         },
         currentStage: stageNum,
         stages,
@@ -554,9 +573,13 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       entityName = caseRes.rows[0].case_name;
       entityType = 'legal_case';
     } else {
-      // Get project information
+      // Get project information and SharePoint folder settings
       const projectRes = await db.query(
-        'SELECT project_id, project_name FROM projects WHERE project_id = $1 LIMIT 1',
+        `SELECT p.project_id, p.project_name, p.sharepoint_folder_url,
+                cc.sharepoint_folder_url AS corporate_sharepoint_folder_url
+         FROM projects p
+         LEFT JOIN corporate_clients cc ON p.corporate_client_id = cc.corporate_id
+         WHERE p.project_id = $1 LIMIT 1`,
         [access.project_id]
       );
 
@@ -564,8 +587,17 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         return res.status(404).json({ error: 'Associated project not found' });
       }
 
-      entityId = projectRes.rows[0].project_id;
-      entityName = projectRes.rows[0].project_name;
+      const projectRow = projectRes.rows[0];
+      const projectSharepointUrl = projectRow.sharepoint_folder_url || projectRow.corporate_sharepoint_folder_url || null;
+      if (projectSharepointUrl) {
+        return res.status(403).json({
+          error: 'SharePoint upload configured',
+          detail: 'This project uses SharePoint folder upload. Please use the link provided in the client portal upload section.'
+        });
+      }
+
+      entityId = projectRow.project_id;
+      entityName = projectRow.project_name;
       entityType = 'project';
     }
 
