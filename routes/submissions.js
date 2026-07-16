@@ -14,7 +14,8 @@ router.post('/', async (req, res) => {
     notes,
     scheduled_for_date,
     client_name,
-    assigned_user_id
+    assigned_user_id,
+    vfs_reference_number
   } = req.body;
 
   try {
@@ -30,10 +31,10 @@ router.post('/', async (req, res) => {
     }
 
     const result = await db.query(
-      `INSERT INTO submissions (project_id, project_name, submission_type, submission_date, submitted_by, status, notes, scheduled_for_date, client_name, assigned_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO submissions (project_id, project_name, submission_type, submission_date, submitted_by, status, notes, scheduled_for_date, client_name, assigned_user_id, vfs_reference_number)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
-      [project_id || null, project_name, submission_type, submission_date, submitted_by, status, notes || null, scheduled_for_date || null, client_name || null, assigned_user_id || null]
+      [project_id || null, project_name, submission_type, submission_date, submitted_by, status, notes || null, scheduled_for_date || null, client_name || null, assigned_user_id || null, vfs_reference_number || null]
     );
 
     res.status(201).json(result.rows[0]);
@@ -112,7 +113,7 @@ router.get('/:id', async (req, res) => {
 // --- 4. UPDATE SUBMISSION ---
 router.patch('/:id', async (req, res) => {
   const { id } = req.params;
-  const { submission_type, submission_date, status, notes, scheduled_for_date } = req.body;
+  const { submission_type, submission_date, status, notes, scheduled_for_date, vfs_reference_number } = req.body;
 
   try {
     const existsCheck = await db.query("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='submissions') as exists");
@@ -135,15 +136,16 @@ router.patch('/:id', async (req, res) => {
       status: status !== undefined ? status : current.status,
       notes: notes !== undefined ? notes : current.notes,
       scheduled_for_date: scheduled_for_date !== undefined ? scheduled_for_date : current.scheduled_for_date,
+      vfs_reference_number: vfs_reference_number !== undefined ? vfs_reference_number : current.vfs_reference_number,
       updated_at: new Date().toISOString()
     };
 
     const result = await db.query(
       `UPDATE submissions 
-       SET submission_type = $1, submission_date = $2, status = $3, notes = $4, scheduled_for_date = $5, updated_at = $6
-       WHERE submission_id = $7
+       SET submission_type = $1, submission_date = $2, status = $3, notes = $4, scheduled_for_date = $5, vfs_reference_number = $6, updated_at = $7
+       WHERE submission_id = $8
        RETURNING *`,
-      [updates.submission_type, updates.submission_date, updates.status, updates.notes, updates.scheduled_for_date, updates.updated_at, id]
+      [updates.submission_type, updates.submission_date, updates.status, updates.notes, updates.scheduled_for_date, updates.vfs_reference_number, updates.updated_at, id]
     );
 
     res.json(result.rows[0]);
