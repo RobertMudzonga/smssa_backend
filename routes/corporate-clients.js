@@ -186,6 +186,7 @@ router.post('/', async (req, res) => {
             contact_person_name,
             contact_person_email,
             contact_person_phone,
+            contact_people,
             primary_contact_id,
             max_users = 10,
             subscription_start,
@@ -201,27 +202,55 @@ router.post('/', async (req, res) => {
         const access_token = generateAccessToken();
         const now = new Date().toISOString();
 
-        const result = await db.query(`
-            INSERT INTO corporate_clients (
+        const insertSql = `INSERT INTO corporate_clients (
                 name, company_registration_number, industry, address,
                 contact_person_name, contact_person_email, contact_person_phone,
+                contact_people,
                 primary_contact_id, access_token, is_active,
                 subscription_status, max_users, subscription_start, subscription_end,
                 notes, sharepoint_folder_url, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-            RETURNING *
-        `, [
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) RETURNING *`;
+
+        const valuesArr = [
             name, company_registration_number || null, industry || null, address || null,
             contact_person_name || null, contact_person_email || null, contact_person_phone || null,
+            contact_people ? JSON.stringify(contact_people) : '[]',
             primary_contact_id || null, access_token, true,
             'active', max_users, subscription_start || null, subscription_end || null,
             notes || null, sharepoint_folder_url || null, now, now
-        ]);
+        ];
+
+        console.log('Debug: corporate create values count =', valuesArr.length);
+        console.log('Debug: corporate create SQL =', insertSql);
+        console.log('Debug: corporate create sample values =', JSON.stringify(valuesArr));
+
+        const result = await db.query(insertSql, valuesArr);
 
         res.status(201).json({
             corporate_client: result.rows[0],
             access_link: `${process.env.APP_URL || 'http://localhost:5173'}/corporate-dashboard?token=${access_token}`
         });
+        // Send welcome/notification emails to provided contact people (non-blocking)
+        try {
+            const emailSvc = require('../lib/emailService');
+            const recipients = [];
+            if (contact_person_email) recipients.push(contact_person_email);
+            if (Array.isArray(contact_people)) {
+                contact_people.forEach(cp => { if (cp && cp.email) recipients.push(cp.email); });
+            }
+            // Deduplicate
+            const uniqueRecipients = Array.from(new Set(recipients.filter(Boolean)));
+            if (uniqueRecipients.length > 0) {
+                const link = `${process.env.APP_URL || 'http://localhost:5173'}/corporate-dashboard?token=${access_token}`;
+                emailSvc.sendBulkEmails(uniqueRecipients, {
+                    subject: `Access to ${name} corporate dashboard`,
+                    text: `You have been added as a contact for ${name}. Use this link to access the corporate portal: ${link}`,
+                    html: `<p>You have been added as a contact for <strong>${name}</strong>.</p><p>Open the corporate portal: <a href="${link}">${link}</a></p>`
+                }).then(r => console.log('Corporate creation emails sent', r)).catch(e => console.error('Failed sending corporate creation emails', e));
+            }
+        } catch (e) {
+            console.error('Error invoking email service on corporate create:', e);
+        }
     } catch (error) {
         console.error('Error creating corporate client:', error);
         res.status(500).json({ error: 'Failed to create corporate client', details: error.message });
