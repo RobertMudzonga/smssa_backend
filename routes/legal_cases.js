@@ -460,7 +460,8 @@ router.post('/', async (req, res) => {
             notes,
             tags = [],
             case_status = 'active',
-            next_deadline
+            next_deadline,
+            sharepoint_folder_url
         } = req.body;
         
         // Validate case type
@@ -493,8 +494,8 @@ router.post('/', async (req, res) => {
                 assigned_case_manager_id, assigned_paralegal_id,
                 corporate_client_id, current_step, current_step_name,
                 step_history, workflow_data, priority, notes, tags,
-                started_at, next_deadline
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                started_at, next_deadline, sharepoint_folder_url
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
             RETURNING *
         `, [
             caseReference, case_type, case_title, case_status,
@@ -502,7 +503,7 @@ router.post('/', async (req, res) => {
             assigned_case_manager_id || null, assigned_paralegal_id || null,
             corporate_client_id || null, 1, currentStepName, JSON.stringify(stepHistory),
             JSON.stringify(workflowData), priority, notes || null, tags, now,
-            next_deadline || null
+            next_deadline || null, sharepoint_folder_url || null
         ]);
         
         const newCase = result.rows[0];
@@ -560,7 +561,8 @@ router.patch('/:id', async (req, res) => {
             notes,
             tags,
             case_status,
-            next_deadline
+            next_deadline,
+            sharepoint_folder_url
         } = req.body;
         
         // Build dynamic update query
@@ -614,6 +616,10 @@ router.patch('/:id', async (req, res) => {
         if (next_deadline !== undefined) {
             updates.push(`next_deadline = $${paramIdx++}`);
             values.push(next_deadline);
+        }
+        if (sharepoint_folder_url !== undefined) {
+            updates.push(`sharepoint_folder_url = $${paramIdx++}`);
+            values.push(sharepoint_folder_url || null);
         }
         if (case_status !== undefined) {
             if (!CASE_STATUSES.includes(case_status)) {

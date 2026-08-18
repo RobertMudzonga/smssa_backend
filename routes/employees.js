@@ -1,6 +1,18 @@
 const express = require('express');
 const router = express.Router();
+const { createClerkClient } = require('@clerk/backend');
 const db = require('../db');
+
+const clerkClient = createClerkClient({
+  secretKey: process.env.CLERK_SECRET_KEY,
+});
+
+function requireClerkSession(req, res, next) {
+  if (!req.auth?.sessionClaims && !req.user?.sub) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  return next();
+}
 
 // GET /api/employees - list employees
 router.get('/', async (req, res) => {
@@ -54,15 +66,36 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/employees
-router.post('/', async (req, res) => {
-  const { full_name, work_email, job_position, department, manager_id } = req.body;
+router.post('/', requireClerkSession, async (req, res) => {
+  const { email, firstName, lastName, department, role } = req.body || {};
+
+  if (!email || !firstName || !lastName) {
+    return res.status(400).json({ error: 'email, firstName, and lastName are required' });
+  }
+
   try {
-    const q = `INSERT INTO employees (full_name, work_email, job_position, department, manager_id) VALUES ($1,$2,$3,$4,$5) RETURNING *`;
-    const { rows } = await db.query(q, [full_name, work_email, job_position, department || null, manager_id || null]);
-    res.status(201).json(rows[0]);
+    const clerkUser = await clerkClient.users.createUser({
+      emailAddress: [email],
+      firstName,
+      lastName,
+      publicMetadata: {
+        role: role || 'Employee',
+        department: department || null,
+      },
+    });
+
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    const { rows } = await db.query(
+      `INSERT INTO employees (clerk_id, full_name, work_email, department, role, job_position, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW(), NOW())
+       RETURNING id, clerk_id, full_name, work_email, department, role, job_position, is_active, created_at, updated_at`,
+      [clerkUser.id, fullName, email, department || null, role || 'Employee', 'Employee']
+    );
+
+    return res.status(201).json(rows[0]);
   } catch (err) {
     console.error('Error creating employee', err);
-    res.status(500).json({ error: 'Failed to create employee' });
+    return res.status(500).json({ error: 'Failed to create employee' });
   }
 });
 
@@ -90,16 +123,37 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// DELETE /api/employees/:id  (soft delete: set is_active=false)
-router.delete('/:id', async (req, res) => {
+// DELETE /api/employees/:id
+router.delete('/:id', requireClerkSession, async (req, res) => {
   const { id } = req.params;
   try {
-    const q = `UPDATE employees SET is_active = false, updated_at = now() WHERE id=$1 RETURNING *`;
-    const { rows } = await db.query(q, [id]);
-    res.json(rows[0]);
+    const employeeResult = await db.query(
+      `SELECT id, clerk_id FROM employees WHERE id = $1 OR clerk_id = $2 LIMIT 1`,
+      [id, id]
+    );
+
+    if (employeeResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+
+    const employee = employeeResult.rows[0];
+    if (employee.clerk_id) {
+      await clerkClient.users.deleteUser(employee.clerk_id);
+    }
+
+    const { rows } = await db.query(
+      `UPDATE employees
+       SET is_active = FALSE,
+           updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, clerk_id, full_name, work_email, department, role, is_active`,
+      [employee.id]
+    );
+
+    return res.json(rows[0]);
   } catch (err) {
     console.error('Error deleting employee', err);
-    res.status(500).json({ error: 'Failed to delete employee' });
+    return res.status(500).json({ error: 'Failed to delete employee' });
   }
 });
 

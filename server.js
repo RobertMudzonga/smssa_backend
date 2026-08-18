@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
 const cron = require('node-cron');
+const { createClerkClient } = require('@clerk/backend');
 const { processDueReminders } = require('./lib/reminderScheduler');
 
 if (process.env.NODE_ENV !== 'production') {
@@ -10,6 +11,9 @@ if (process.env.NODE_ENV !== 'production') {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+const clerkClient = createClerkClient({
+	secretKey: process.env.CLERK_SECRET_KEY,
+});
 
 app.use(
 	cors({
@@ -18,8 +22,31 @@ app.use(
 	})
 );
 
+const webhookRoutes = require('./routes/webhooks');
+app.use('/api/webhooks', webhookRoutes);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use(async (req, res, next) => {
+	if (!req.headers.authorization || !req.headers.authorization.startsWith('Bearer ')) {
+		return next();
+	}
+
+	try {
+		const token = req.headers.authorization.slice('Bearer '.length);
+		const auth = await clerkClient.authenticateRequest({
+			request: req,
+			token,
+		});
+		req.auth = auth;
+		req.user = auth?.sessionClaims || null;
+	} catch (error) {
+		console.warn('Clerk auth failed:', error.message || error);
+	}
+
+	next();
+});
 
 // Normalize duplicate /api/api/... paths (some frontends may prepend /api twice)
 app.use((req, res, next) => {

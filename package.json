@@ -10,6 +10,7 @@
     "import-excel": "node scripts/import_excel.js"
   },
   "dependencies": {
+    "@clerk/backend": "^3.16.0",
     "archiver": "^7.0.1",
     "aws-sdk": "^2.1693.0",
     "chrono-node": "^2.9.0",
@@ -21,6 +22,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
     "pg": "^8.11.5",
+    "svix": "^1.99.1",
     "uuid": "^9.0.0",
     "xlsx": "^0.18.5"
   },
