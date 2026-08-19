@@ -112,7 +112,7 @@ router.get('/', async (req, res) => {
 // Get leave balance for current employee
 router.get('/balance/me', async (req, res) => {
   try {
-    const email = req.headers['x-user-email'] || 'system';
+    const email = req.user?.email || 'system';
     
     // Look up employee by email
     const employeeResult = await db.query(
@@ -190,7 +190,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { leave_type, start_date, end_date, reason } = req.body;
-    const createdBy = req.headers['x-user-email'] || 'system';
+    const createdBy = req.user?.email || 'system';
     
     if (!leave_type || !start_date || !end_date) {
       return res.status(400).json({ error: 'Missing required fields' });
@@ -306,7 +306,7 @@ router.patch('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const { status, comments } = req.body;
-    const approvedBy = req.headers['x-user-email'] || 'system';
+    const approvedBy = req.user?.email || 'system';
 
     if (!status) {
       return res.status(400).json({ error: 'Status is required' });

@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { notifyManagers, createNotification } = require('../lib/notifications');
+const { notifyEntityCreated } = require('../lib/entityNotifications');
+const { allowEmployeeOrCorporate } = require('../middleware/corporateAuth');
+
+router.use(allowEmployeeOrCorporate);
 
 // --- 1. CREATE PROJECT ---
 // Flexible endpoint: accepts either lead-to-project conversion OR direct project creation
@@ -195,6 +199,14 @@ router.post('/', async (req, res) => {
                 console.error('Error creating project assignment notification:', notifErr);
             }
         }
+
+        await notifyEntityCreated({
+            entityType: 'project',
+            entityId: projectId,
+            title: `New project created: ${project_name || `Project #${projectId}`}`,
+            summary: `Project ${project_name || `#${projectId}`} was created for ${client_name || 'an unspecified client'}${case_type ? ` (${case_type})` : ''}.`,
+            link: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/projects/${projectId}` : null,
+        });
         
         res.status(201).json({ message: "Project created successfully", projectId, project: createdProject });
 
@@ -318,7 +330,7 @@ router.patch('/:id', async (req, res) => {
 
     // Internal-only: require company email domain
     try {
-        const email = String(req.headers['x-user-email'] || '').toLowerCase();
+        const email = String(req.user?.email || '').toLowerCase();
         if (!email.endsWith('@immigrationspecialists.co.za')) {
             return res.status(403).json({ error: 'Forbidden: internal access only' });
         }
@@ -1074,7 +1086,17 @@ router.post('/create', async (req, res) => {
             const q = `INSERT INTO projects (${fields.join(',')}) VALUES (${fields.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`;
             try {
                 const result = await db.query(q, values);
-                return res.status(201).json(result.rows[0]);
+                const created = result.rows[0];
+                await notifyEntityCreated({
+                    entityType: 'project',
+                    entityId: created.project_id || created.id || null,
+                    title: `New project created: ${created.project_name || payload.project_name || 'Project'}`,
+                    summary: `Project ${created.project_name || payload.project_name || 'a new project'} was created for ${created.client_name || payload.client_name || 'an unspecified client'}.`,
+                    link: process.env.FRONTEND_URL && (created.project_id || created.id)
+                        ? `${process.env.FRONTEND_URL}/projects/${created.project_id || created.id}`
+                        : null,
+                });
+                return res.status(201).json(created);
             } catch (innerErr) {
                 console.error('Projects insert failed (maybe schema mismatch):', innerErr);
                 console.warn('Projects insert failed (maybe schema mismatch), returning echo:', innerErr.message || innerErr);
@@ -1120,7 +1142,7 @@ router.get('/:id/reviews', async (req, res) => {
 router.post('/:id/reviews', async (req, res) => {
     const { id } = req.params;
     const { health_status, comment } = req.body || {};
-    const email = String(req.headers['x-user-email'] || '').toLowerCase();
+    const email = String(req.user?.email || '').toLowerCase();
 
     if (!email.endsWith('@immigrationspecialists.co.za')) {
         return res.status(403).json({ error: 'Forbidden: internal access only' });

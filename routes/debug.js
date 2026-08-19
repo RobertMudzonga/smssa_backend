@@ -3,6 +3,15 @@ const router = express.Router();
 const db = require('../db');
 const emailService = require('../lib/emailService');
 
+// This whole router exposes DB internals and can send arbitrary emails via the
+// SMTP account - restrict it to super admins even though it's already behind requireAuth.
+router.use((req, res, next) => {
+  if (!req.user?.is_super_admin) {
+    return res.status(403).json({ ok: false, error: 'Super admin access required' });
+  }
+  next();
+});
+
 // Simple DB health check
 router.get('/db', async (req, res) => {
   try {

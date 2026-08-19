@@ -216,6 +216,9 @@ router.post('/database-health-check', async (req, res) => {
 });
 
 router.post('/apply-database-migrations', async (req, res) => {
+  if (!req.user?.is_super_admin) {
+    return res.status(403).json({ ok: false, error: 'Super admin access required' });
+  }
   try {
     const migrations = req.body?.migrations || [];
     // Run migrate.js as a child process and capture output

@@ -4,6 +4,7 @@ const db = require('../db');
 const multer = require('multer');
 const crypto = require('crypto');
 const { sendNotification } = require('../lib/notifications');
+const { requireAuth } = require('../middleware/auth');
 
 // Use memory storage for client portal file uploads
 const storage = multer.memoryStorage();
@@ -33,7 +34,9 @@ function generatePassword(length = 8) {
 }
 
 // POST /api/client-portal/generate - Create client portal access with password
-router.post('/generate', async (req, res) => {
+// This router is mounted publicly (clients authenticate via their own token+password
+// below), so this staff-only action needs its own explicit auth check.
+router.post('/generate', requireAuth, async (req, res) => {
   try {
     const { project_id, expiry_days = 90 } = req.body;
     if (!project_id) return res.status(400).json({ error: 'project_id is required' });

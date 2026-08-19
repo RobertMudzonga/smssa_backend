@@ -1,28 +1,20 @@
 const express = require('express');
 const router = express.Router();
-const { createClerkClient } = require('@clerk/backend');
 const db = require('../db');
-
-const clerkClient = createClerkClient({
-  secretKey: process.env.CLERK_SECRET_KEY,
-});
-
-function requireClerkSession(req, res, next) {
-  if (!req.auth?.sessionClaims && !req.user?.sub) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  return next();
-}
+const { requireAuth } = require('../middleware/auth');
 
 // GET /api/employees - list employees
+// By default only active employees are returned; pass ?includeInactive=true to see soft-deleted ones.
 router.get('/', async (req, res) => {
   try {
+    const includeInactive = String(req.query.includeInactive || '').toLowerCase() === 'true';
     const q = `
       SELECT e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at,
              e.conversions_count, e.total_revenue,
              array_agg(DISTINCT ep.permission) FILTER (WHERE ep.permission IS NOT NULL) as permissions
       FROM employees e
       LEFT JOIN employee_permissions ep ON e.id = ep.employee_id
+      ${includeInactive ? '' : 'WHERE e.is_active IS NOT FALSE'}
       GROUP BY e.id, e.full_name, e.work_email, e.job_position, e.department, e.manager_id, e.role, e.is_active, e.is_super_admin, e.created_at, e.conversions_count, e.total_revenue
       ORDER BY e.full_name
     `;
@@ -66,7 +58,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/employees
-router.post('/', requireClerkSession, async (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
   const { email, firstName, lastName, department, role } = req.body || {};
 
   if (!email || !firstName || !lastName) {
@@ -74,22 +66,12 @@ router.post('/', requireClerkSession, async (req, res) => {
   }
 
   try {
-    const clerkUser = await clerkClient.users.createUser({
-      emailAddress: [email],
-      firstName,
-      lastName,
-      publicMetadata: {
-        role: role || 'Employee',
-        department: department || null,
-      },
-    });
-
     const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
     const { rows } = await db.query(
-      `INSERT INTO employees (clerk_id, full_name, work_email, department, role, job_position, is_active, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE, NOW(), NOW())
-       RETURNING id, clerk_id, full_name, work_email, department, role, job_position, is_active, created_at, updated_at`,
-      [clerkUser.id, fullName, email, department || null, role || 'Employee', 'Employee']
+      `INSERT INTO employees (full_name, work_email, department, role, job_position, is_active, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
+       RETURNING id, full_name, work_email, department, role, job_position, is_active, created_at, updated_at`,
+      [fullName, email, department || null, role || 'Employee', 'Employee']
     );
 
     return res.status(201).json(rows[0]);
@@ -124,12 +106,12 @@ router.patch('/:id', async (req, res) => {
 });
 
 // DELETE /api/employees/:id
-router.delete('/:id', requireClerkSession, async (req, res) => {
+router.delete('/:id', requireAuth, async (req, res) => {
   const { id } = req.params;
   try {
     const employeeResult = await db.query(
-      `SELECT id, clerk_id FROM employees WHERE id = $1 OR clerk_id = $2 LIMIT 1`,
-      [id, id]
+      `SELECT id FROM employees WHERE id = $1 LIMIT 1`,
+      [id]
     );
 
     if (employeeResult.rows.length === 0) {
@@ -137,16 +119,12 @@ router.delete('/:id', requireClerkSession, async (req, res) => {
     }
 
     const employee = employeeResult.rows[0];
-    if (employee.clerk_id) {
-      await clerkClient.users.deleteUser(employee.clerk_id);
-    }
-
     const { rows } = await db.query(
       `UPDATE employees
        SET is_active = FALSE,
            updated_at = NOW()
        WHERE id = $1
-       RETURNING id, clerk_id, full_name, work_email, department, role, is_active`,
+       RETURNING id, full_name, work_email, department, role, is_active`,
       [employee.id]
     );
 

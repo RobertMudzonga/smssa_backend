@@ -9,25 +9,18 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const crypto = require('crypto');
+const { requireAuth } = require('../middleware/auth');
 
 // ============================================================================
 // HELPERS
 // ============================================================================
-
-const SUPER_ADMIN_EMAILS = ['robert@immigrationspecialists.co.za', 'munya@immigrationspecialists.co.za'];
 
 function generateAccessToken() {
     return crypto.randomBytes(32).toString('hex');
 }
 
 function isSuperAdmin(req) {
-    try {
-        const email = String(req.headers['x-user-email'] || '').toLowerCase();
-        if (!email) return false;
-        return SUPER_ADMIN_EMAILS.includes(email);
-    } catch (e) {
-        return false;
-    }
+    return !!(req.user && req.user.is_super_admin);
 }
 
 // ============================================================================
@@ -38,7 +31,7 @@ function isSuperAdmin(req) {
  * GET /api/corporate-clients
  * Get all corporate clients
  */
-router.get('/', async (req, res) => {
+router.get('/', requireAuth, async (req, res) => {
     try {
         // Check if corporate_clients table exists
         const tableCheck = await db.query(`
@@ -139,7 +132,7 @@ router.get('/by-token/:token', async (req, res) => {
  * GET /api/corporate-clients/:id
  * Get a specific corporate client
  */
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
 
@@ -171,7 +164,7 @@ router.get('/:id', async (req, res) => {
  * Create a new corporate client
  * Requires: Super admin access
  */
-router.post('/', async (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
     try {
         // Verify super admin authorization
         if (!isSuperAdmin(req)) {
@@ -261,7 +254,7 @@ router.post('/', async (req, res) => {
  * PATCH /api/corporate-clients/:id
  * Update a corporate client
  */
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const updates = [];
@@ -315,7 +308,7 @@ router.patch('/:id', async (req, res) => {
  * Delete a corporate client
  * Requires: Super admin access
  */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAuth, async (req, res) => {
     try {
         // Verify super admin authorization
         if (!isSuperAdmin(req)) {
@@ -364,7 +357,7 @@ router.delete('/:id', async (req, res) => {
  * GET /api/corporate-clients/:id/employees
  * Get employees assigned to a corporate client
  */
-router.get('/:id/employees', async (req, res) => {
+router.get('/:id/employees', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
 
@@ -400,7 +393,7 @@ router.get('/:id/employees', async (req, res) => {
  * POST /api/corporate-clients/:id/employees
  * Add an employee to a corporate client
  */
-router.post('/:id/employees', async (req, res) => {
+router.post('/:id/employees', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
         const {
@@ -437,7 +430,7 @@ router.post('/:id/employees', async (req, res) => {
  * PATCH /api/corporate-clients/:id/employees/:employeeId
  * Update employee permissions for a corporate client
  */
-router.patch('/:id/employees/:employeeId', async (req, res) => {
+router.patch('/:id/employees/:employeeId', requireAuth, async (req, res) => {
     try {
         const { id, employeeId } = req.params;
         const { role, can_create_cases, can_edit_cases, can_delete_cases } = req.body;
@@ -492,7 +485,7 @@ router.patch('/:id/employees/:employeeId', async (req, res) => {
  * DELETE /api/corporate-clients/:id/employees/:employeeId
  * Remove an employee from a corporate client
  */
-router.delete('/:id/employees/:employeeId', async (req, res) => {
+router.delete('/:id/employees/:employeeId', requireAuth, async (req, res) => {
     try {
         const { id, employeeId } = req.params;
 
@@ -525,7 +518,7 @@ router.delete('/:id/employees/:employeeId', async (req, res) => {
  * GET /api/corporate-clients/:id/analytics
  * Get analytics for a corporate client
  */
-router.get('/:id/analytics', async (req, res) => {
+router.get('/:id/analytics', requireAuth, async (req, res) => {
     try {
         const { id } = req.params;
 

@@ -2,6 +2,17 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
+const { signSession } = require('../middleware/auth');
+
+// Slow down brute-force/credential-stuffing attempts against auth endpoints.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'too_many_attempts' },
+});
 
 // Cache info about the users table columns so we can adapt queries to existing schema
 let _usersTableInfo = null;
@@ -35,12 +46,19 @@ function hashPassword(password, salt) {
   return key.toString('hex');
 }
 
+function hashesMatch(computedHex, storedHex) {
+  const computed = Buffer.from(computedHex, 'hex');
+  const stored = Buffer.from(storedHex, 'hex');
+  if (computed.length !== stored.length) return false;
+  return crypto.timingSafeEqual(computed, stored);
+}
+
 function genSalt() {
   return crypto.randomBytes(16).toString('hex');
 }
 
 // POST /api/auth/signup
-router.post('/signup', async (req, res) => {
+router.post('/signup', authLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'missing_credentials' });
   if (!email.toLowerCase().endsWith('@immigrationspecialists.co.za')) return res.status(403).json({ error: 'domain_not_allowed' });
@@ -68,7 +86,7 @@ router.post('/signup', async (req, res) => {
 });
 
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'missing_credentials' });
   if (!email.toLowerCase().endsWith('@immigrationspecialists.co.za')) return res.status(403).json({ error: 'domain_not_allowed' });
@@ -90,7 +108,7 @@ router.post('/login', async (req, res) => {
       if (!user) return res.status(401).json({ error: 'invalid_credentials' });
       if (user.password_hash && user.password_salt) {
         const computed = hashPassword(password, user.password_salt);
-        if (computed !== user.password_hash) return res.status(401).json({ error: 'invalid_credentials' });
+        if (!hashesMatch(computed, user.password_hash)) return res.status(401).json({ error: 'invalid_credentials' });
       } else {
         // no password set - reject
         return res.status(401).json({ error: 'invalid_credentials' });
@@ -124,14 +142,27 @@ router.post('/login', async (req, res) => {
       } catch (empErr) {
         console.warn('Could not fetch employee info for user:', empErr);
       }
-      
-      return res.json({ ok: true, user });
+
+      const token = signSession({
+        id: user.id,
+        email: user.email,
+        employee_id: user.employee_id || null,
+        role: user.role || null,
+        department: user.department || null,
+        is_super_admin: user.is_super_admin || false,
+        permissions: user.permissions || [],
+      });
+
+      return res.json({ ok: true, user, token });
     } catch (e) {
       console.warn('DB login failed', e.message || e);
-      // DB unavailable fallback for dev: allow login for domain emails if password equals DEV_FALLBACK_PASSWORD
-      const devPass = process.env.DEV_FALLBACK_PASSWORD || 'devpass';
-      if (password === devPass) {
-        return res.json({ ok: true, user: { id: 'dev-' + email, email } });
+      // DB unavailable fallback for local dev only - never active in production, and requires an
+      // explicit env var (no hardcoded default password).
+      const devPass = process.env.DEV_FALLBACK_PASSWORD;
+      if (process.env.NODE_ENV !== 'production' && devPass && password === devPass) {
+        const devUser = { id: 'dev-' + email, email };
+        const token = signSession(devUser);
+        return res.json({ ok: true, user: devUser, token });
       }
       return res.status(503).json({ ok: false, error: 'database_unavailable' });
     }

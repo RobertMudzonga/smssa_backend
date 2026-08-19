@@ -684,7 +684,7 @@ module.exports = router;
 router.post('/:id/followup', async (req, res) => {
   const { id } = req.params;
   const { followUpType, scheduledDate } = req.body;
-  const created_by = req.headers['x-user-email'] || null;
+  const created_by = req.user?.email || null;
   try {
     // Try to insert into follow_ups table if it exists
     try {

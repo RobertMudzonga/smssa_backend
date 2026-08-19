@@ -62,7 +62,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
     // Allow all users to upload documents (including client portal)
     const isClientPortal = req.body.client_portal_token !== undefined;
-    const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
+    const uploaded_by = req.user?.email || req.body.uploaded_by || null;
 
     const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null, legal_case_id = null } = req.body;
     const file = req.file;
@@ -174,7 +174,7 @@ router.post('/bulk-upload', upload.array('files'), async (req, res) => {
 
     // Allow all users to upload documents (including client portal)
     const isClientPortal = req.body.client_portal_token !== undefined;
-    const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
+    const uploaded_by = req.user?.email || req.body.uploaded_by || null;
 
     const { project_name = null, project_id = null, folder_id = null, document_type = null, description = null, expiry_date = null, document_name = null } = req.body;
 
@@ -525,7 +525,7 @@ router.post('/:id/new-version', upload.single('file'), async (req, res) => {
     const original = originalDoc.rows[0];
     const file = req.file;
     const fileHash = calculateFileHash(file.buffer);
-    const uploaded_by = req.body.uploaded_by || req.headers['x-user-email'] || null;
+    const uploaded_by = req.user?.email || req.body.uploaded_by || null;
     
     // Mark current document as not latest
     await db.query(

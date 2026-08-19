@@ -1,6 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { allowEmployeeOrCorporate } = require('../middleware/corporateAuth');
+
+router.use(allowEmployeeOrCorporate);
 
 // Helper to build default steps
 const DEFAULT_STEPS = [

@@ -12,6 +12,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db');
 const { createNotification } = require('../lib/notifications');
+const { notifyEntityCreated } = require('../lib/entityNotifications');
+const { allowEmployeeOrCorporate } = require('../middleware/corporateAuth');
+
+router.use(allowEmployeeOrCorporate);
 
 // ============================================================================
 // CONSTANTS
@@ -531,6 +535,14 @@ router.post('/', async (req, res) => {
         }
         
         await client.query('COMMIT');
+
+        await notifyEntityCreated({
+            entityType: 'legal_case',
+            entityId: newCase.case_id,
+            title: `New legal case created: ${case_title}`,
+            summary: `Case ${caseReference} was created for ${client_name}${corporate_client_id ? ` under corporate client #${corporate_client_id}` : ''}.`,
+            link: process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/legal-cases/${newCase.case_id}` : null,
+        });
         
         res.status(201).json(newCase);
     } catch (error) {

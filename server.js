@@ -2,8 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
 const cron = require('node-cron');
-const { createClerkClient } = require('@clerk/backend');
 const { processDueReminders } = require('./lib/reminderScheduler');
+const { authenticate, requireAuth } = require('./middleware/auth');
+const { processVisaExpiryAlerts } = require('./lib/visaExpiryAlerts');
 
 if (process.env.NODE_ENV !== 'production') {
 	require('dotenv').config();
@@ -11,9 +12,9 @@ if (process.env.NODE_ENV !== 'production') {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const clerkClient = createClerkClient({
-	secretKey: process.env.CLERK_SECRET_KEY,
-});
+// Render (and most PaaS hosts) sit behind a reverse proxy; trust the first hop
+// so rate limiting and IP-based logic see the real client IP from X-Forwarded-For.
+app.set('trust proxy', 1);
 
 app.use(
 	cors({
@@ -22,31 +23,9 @@ app.use(
 	})
 );
 
-const webhookRoutes = require('./routes/webhooks');
-app.use('/api/webhooks', webhookRoutes);
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-app.use(async (req, res, next) => {
-	if (!req.headers.authorization || !req.headers.authorization.startsWith('Bearer ')) {
-		return next();
-	}
-
-	try {
-		const token = req.headers.authorization.slice('Bearer '.length);
-		const auth = await clerkClient.authenticateRequest({
-			request: req,
-			token,
-		});
-		req.auth = auth;
-		req.user = auth?.sessionClaims || null;
-	} catch (error) {
-		console.warn('Clerk auth failed:', error.message || error);
-	}
-
-	next();
-});
+app.use(authenticate);
 
 // Normalize duplicate /api/api/... paths (some frontends may prepend /api twice)
 app.use((req, res, next) => {
@@ -86,35 +65,47 @@ const submissionsRouter = require('./routes/submissions');
 const legalCasesRouter = require('./routes/legal_cases');
 const workCalendarRouter = require('./routes/work_calendar');
 const employeeVisasRouter = require('./routes/employee_visas');
+const visaTypesRouter = require('./routes/visa_types');
 
 app.get('/', (req, res) => {
 	res.json({ status: 'ok', env: process.env.NODE_ENV || 'development' });
 });
 
-app.use('/api/leads', leadsRouter);
-app.use('/api/projects', projectsRouter);
-app.use('/api/prospects', prospectsRouter);
-app.use('/api/documents', documentsRouter);
-app.use('/api/employees', employeesRouter);
-app.use('/api/appraisals', appraisalsRouter);
-app.use('/api/kpis', kpisRouter);
-app.use('/api/import', importsRouter);
-app.use('/api/checklists', checklistsRouter);
-app.use('/api/functions', functionsRouter);
-app.use('/api/templates', templatesRouter);
+// /api/auth (login/signup/logout), /api/client-portal (client token+password
+// auth), /api/corporate-dashboard and /api/corporate-permits (external
+// corporate-client portal, authenticated via a per-corporate-client
+// access_token instead of an employee login) all stay publicly mounted.
+// /api/documents also stays publicly mounted because some of its routes are
+// used by that same unauthenticated corporate portal (document upload) and
+// by browser `window.open()` download links that can't carry a bearer
+// token; auth is instead applied per-route inside routes/documents.js and
+// routes/corporate-clients.js for the endpoints that are employee-only.
 app.use('/api/auth', authRouter);
 app.use('/api/client-portal', clientPortalRouter);
 app.use('/api/corporate-dashboard', corporateDashboardRouter);
-app.use('/api/corporate-clients', corporateClientsRouter);
 app.use('/api/corporate-permits', corporatePermitsRouter);
-app.use('/api/debug', debugRouter);
-app.use('/api/payment-requests', paymentRequestsRouter);
-app.use('/api/notifications', notificationsRouter);
-app.use('/api/leave-requests', leaveRequestsRouter);
-app.use('/api/submissions', submissionsRouter);
+app.use('/api/documents', documentsRouter);
+app.use('/api/projects', projectsRouter);
 app.use('/api/legal-cases', legalCasesRouter);
-app.use('/api/work-calendar', workCalendarRouter);
 app.use('/api/employee-visas', employeeVisasRouter);
+app.use('/api/visa-types', requireAuth, visaTypesRouter);
+
+app.use('/api/leads', requireAuth, leadsRouter);
+app.use('/api/prospects', requireAuth, prospectsRouter);
+app.use('/api/employees', requireAuth, employeesRouter);
+app.use('/api/appraisals', requireAuth, appraisalsRouter);
+app.use('/api/kpis', requireAuth, kpisRouter);
+app.use('/api/import', requireAuth, importsRouter);
+app.use('/api/checklists', requireAuth, checklistsRouter);
+app.use('/api/functions', requireAuth, functionsRouter);
+app.use('/api/templates', requireAuth, templatesRouter);
+app.use('/api/corporate-clients', corporateClientsRouter);
+app.use('/api/debug', requireAuth, debugRouter);
+app.use('/api/payment-requests', requireAuth, paymentRequestsRouter);
+app.use('/api/notifications', requireAuth, notificationsRouter);
+app.use('/api/leave-requests', requireAuth, leaveRequestsRouter);
+app.use('/api/submissions', requireAuth, submissionsRouter);
+app.use('/api/work-calendar', requireAuth, workCalendarRouter);
 
 // Global error handler
 app.use((err, req, res, next) => {
@@ -186,6 +177,12 @@ let server;
 					console.log(`Reminder check complete: ${result.sent} sent, ${result.failed} failed`);
 				} catch (err) {
 					console.error('Error in reminder scheduler job:', err);
+				}
+				try {
+					const visaResult = await processVisaExpiryAlerts();
+					console.log(`Visa expiry alert check complete: ${visaResult.sent} sent, ${visaResult.failed} failed, ${visaResult.skipped} skipped`);
+				} catch (err) {
+					console.error('Error in visa expiry alert job:', err);
 				}
 			});
 			
