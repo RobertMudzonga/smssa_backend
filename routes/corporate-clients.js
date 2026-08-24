@@ -10,6 +10,7 @@ const router = express.Router();
 const db = require('../db');
 const crypto = require('crypto');
 const { requireAuth } = require('../middleware/auth');
+const emailService = require('../lib/emailService');
 
 // ============================================================================
 // HELPERS
@@ -21,6 +22,53 @@ function generateAccessToken() {
 
 function isSuperAdmin(req) {
     return !!(req.user && req.user.is_super_admin);
+}
+
+function getAppBaseUrl() {
+    const raw = process.env.APP_URL || process.env.FRONTEND_URL || 'https://www.immigratepro.co.za';
+    return String(raw).replace(/\/$/, '');
+}
+
+function buildCorporateAccessLink(accessToken) {
+    return `${getAppBaseUrl()}/corporate-dashboard?token=${accessToken}`;
+}
+
+async function getCorporateClientById(id) {
+    const result = await db.query(
+        `SELECT corporate_id, name, access_token, contact_person_email, contact_people
+         FROM corporate_clients
+         WHERE corporate_id = $1
+         LIMIT 1`,
+        [id]
+    );
+    return result.rows[0] || null;
+}
+
+function collectCorporateRecipientEmails(corporateClient) {
+    const recipients = [];
+
+    if (corporateClient?.contact_person_email) {
+        recipients.push(corporateClient.contact_person_email);
+    }
+
+    const contactPeople = corporateClient?.contact_people;
+    const parsedContactPeople = Array.isArray(contactPeople)
+        ? contactPeople
+        : (() => {
+            if (!contactPeople) return [];
+            try {
+                const parsed = JSON.parse(contactPeople);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                return [];
+            }
+        })();
+
+    for (const person of parsedContactPeople) {
+        if (person && person.email) recipients.push(person.email);
+    }
+
+    return Array.from(new Set(recipients.filter(Boolean)));
 }
 
 // ============================================================================
@@ -219,13 +267,14 @@ router.post('/', requireAuth, async (req, res) => {
 
         const result = await db.query(insertSql, valuesArr);
 
+        const accessLink = buildCorporateAccessLink(access_token);
+
         res.status(201).json({
             corporate_client: result.rows[0],
-            access_link: `${process.env.APP_URL || 'http://localhost:5173'}/corporate-dashboard?token=${access_token}`
+            access_link: accessLink
         });
         // Send welcome/notification emails to provided contact people (non-blocking)
         try {
-            const emailSvc = require('../lib/emailService');
             const recipients = [];
             if (contact_person_email) recipients.push(contact_person_email);
             if (Array.isArray(contact_people)) {
@@ -234,11 +283,10 @@ router.post('/', requireAuth, async (req, res) => {
             // Deduplicate
             const uniqueRecipients = Array.from(new Set(recipients.filter(Boolean)));
             if (uniqueRecipients.length > 0) {
-                const link = `${process.env.APP_URL || 'http://localhost:5173'}/corporate-dashboard?token=${access_token}`;
-                emailSvc.sendBulkEmails(uniqueRecipients, {
+                emailService.sendBulkEmails(uniqueRecipients, {
                     subject: `Access to ${name} corporate dashboard`,
-                    text: `You have been added as a contact for ${name}. Use this link to access the corporate portal: ${link}`,
-                    html: `<p>You have been added as a contact for <strong>${name}</strong>.</p><p>Open the corporate portal: <a href="${link}">${link}</a></p>`
+                    text: `You have been added as a contact for ${name}. Use this link to access the corporate portal: ${accessLink}`,
+                    html: `<p>You have been added as a contact for <strong>${name}</strong>.</p><p>Open the corporate portal: <a href="${accessLink}">${accessLink}</a></p>`
                 }).then(r => console.log('Corporate creation emails sent', r)).catch(e => console.error('Failed sending corporate creation emails', e));
             }
         } catch (e) {
@@ -300,6 +348,69 @@ router.patch('/:id', requireAuth, async (req, res) => {
     } catch (error) {
         console.error('Error updating corporate client:', error);
         res.status(500).json({ error: 'Failed to update corporate client', details: error.message });
+    }
+});
+
+/**
+ * GET /api/corporate-clients/:id/access-link
+ * Return active corporate access link for admin retrieval/copy
+ */
+router.get('/:id/access-link', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const corporateClient = await getCorporateClientById(id);
+
+        if (!corporateClient) {
+            return res.status(404).json({ error: 'Corporate client not found' });
+        }
+
+        const accessLink = buildCorporateAccessLink(corporateClient.access_token);
+        return res.json({
+            corporate_id: corporateClient.corporate_id,
+            name: corporateClient.name,
+            access_link: accessLink,
+            access_token: corporateClient.access_token
+        });
+    } catch (error) {
+        console.error('Error retrieving corporate access link:', error);
+        return res.status(500).json({ error: 'Failed to retrieve access link', details: error.message });
+    }
+});
+
+/**
+ * POST /api/corporate-clients/:id/resend-access-link
+ * Resend active corporate access link to configured contact emails
+ */
+router.post('/:id/resend-access-link', requireAuth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const corporateClient = await getCorporateClientById(id);
+
+        if (!corporateClient) {
+            return res.status(404).json({ error: 'Corporate client not found' });
+        }
+
+        const recipients = collectCorporateRecipientEmails(corporateClient);
+        if (recipients.length === 0) {
+            return res.status(400).json({ error: 'No contact email addresses configured for this corporate client' });
+        }
+
+        const accessLink = buildCorporateAccessLink(corporateClient.access_token);
+        const emailResult = await emailService.sendBulkEmails(recipients, {
+            subject: `Corporate dashboard access link for ${corporateClient.name}`,
+            text: `Here is your access link for the corporate portal:\n\n${accessLink}`,
+            html: `<p>Here is your access link for the corporate portal:</p><p><a href="${accessLink}">${accessLink}</a></p>`
+        });
+
+        return res.json({
+            message: 'Access link email dispatch attempted',
+            recipients,
+            access_link: accessLink,
+            email_result: emailResult
+        });
+    } catch (error) {
+        console.error('Error resending corporate access link:', error);
+        return res.status(500).json({ error: 'Failed to resend access link', details: error.message });
     }
 });
 

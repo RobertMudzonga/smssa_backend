@@ -168,6 +168,48 @@ function createDefaultWorkflowData(caseType) {
     }
 }
 
+function getInstructionTarget(req) {
+    const rawType = String(req.query.itemType || req.query.target || 'case').toLowerCase();
+    const targetType = rawType === 'project' ? 'project' : 'case';
+    const targetId = parseInt(req.params.id, 10);
+    return { targetType, targetId };
+}
+
+function getAuthorContext(req) {
+    if (req.corporateClient) {
+        return {
+            authorId: req.corporateClient.corporate_id,
+            authorRole: 'corporate_client',
+            authorName: req.corporateClient.name || 'Corporate Client'
+        };
+    }
+
+    const role = String(req.user?.role || '').toLowerCase();
+    const authorRole = role === 'manager' || role === 'case_manager'
+        ? 'internal_manager'
+        : role === 'admin' || role === 'super_admin'
+            ? 'internal_admin'
+            : 'internal_staff';
+
+    return {
+        authorId: req.user?.employee_id || req.user?.id || null,
+        authorRole,
+        authorName: req.user?.full_name || req.user?.email || 'Internal User'
+    };
+}
+
+async function assertInstructionTargetExists(targetType, targetId) {
+    if (!Number.isFinite(targetId)) return false;
+
+    if (targetType === 'project') {
+        const check = await db.query('SELECT project_id FROM projects WHERE project_id = $1 LIMIT 1', [targetId]);
+        return check.rows.length > 0;
+    }
+
+    const check = await db.query('SELECT case_id FROM legal_cases WHERE case_id = $1 LIMIT 1', [targetId]);
+    return check.rows.length > 0;
+}
+
 /**
  * Log a transition for audit purposes
  */
@@ -438,6 +480,92 @@ router.get('/:id', async (req, res) => {
     } catch (error) {
         console.error('Error fetching legal case:', error);
         res.status(500).json({ error: 'Failed to fetch legal case', details: error.message });
+    }
+});
+
+/**
+ * GET /api/legal-cases/:id/instructions?itemType=case|project
+ * Fetch instructions/notes for a case or project in chronological order
+ */
+router.get('/:id/instructions', async (req, res) => {
+    try {
+        const { targetType, targetId } = getInstructionTarget(req);
+
+        if (!Number.isFinite(targetId)) {
+            return res.status(400).json({ error: 'Invalid id' });
+        }
+
+        const exists = await assertInstructionTargetExists(targetType, targetId);
+        if (!exists) {
+            return res.status(404).json({ error: `${targetType === 'project' ? 'Project' : 'Legal case'} not found` });
+        }
+
+        const whereClause = targetType === 'project' ? 'i.project_id = $1' : 'i.legal_case_id = $1';
+        const rows = await db.query(
+            `SELECT i.id, i.legal_case_id, i.project_id, i.author_id, i.author_role, i.author_name, i.message, i.created_at,
+                    e.full_name as internal_author_name
+             FROM instructions i
+             LEFT JOIN employees e ON i.author_id = e.id
+             WHERE ${whereClause}
+             ORDER BY i.created_at ASC, i.id ASC`,
+            [targetId]
+        );
+
+        const instructions = rows.rows.map((r) => ({
+            id: r.id,
+            legal_case_id: r.legal_case_id,
+            project_id: r.project_id,
+            author_id: r.author_id,
+            author_role: r.author_role,
+            author_name: r.author_name || r.internal_author_name || 'User',
+            message: r.message,
+            created_at: r.created_at
+        }));
+
+        res.json({ item_type: targetType, item_id: targetId, instructions });
+    } catch (error) {
+        console.error('Error fetching instructions:', error);
+        res.status(500).json({ error: 'Failed to fetch instructions', details: error.message });
+    }
+});
+
+/**
+ * POST /api/legal-cases/:id/instructions?itemType=case|project
+ * Add a new instruction/note for a case or project
+ */
+router.post('/:id/instructions', async (req, res) => {
+    try {
+        const { targetType, targetId } = getInstructionTarget(req);
+        const message = String(req.body?.message || '').trim();
+
+        if (!Number.isFinite(targetId)) {
+            return res.status(400).json({ error: 'Invalid id' });
+        }
+
+        if (!message) {
+            return res.status(400).json({ error: 'message is required' });
+        }
+
+        const exists = await assertInstructionTargetExists(targetType, targetId);
+        if (!exists) {
+            return res.status(404).json({ error: `${targetType === 'project' ? 'Project' : 'Legal case'} not found` });
+        }
+
+        const author = getAuthorContext(req);
+        const legalCaseId = targetType === 'case' ? targetId : null;
+        const projectId = targetType === 'project' ? targetId : null;
+
+        const insert = await db.query(
+            `INSERT INTO instructions (legal_case_id, project_id, author_id, author_role, author_name, message)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id, legal_case_id, project_id, author_id, author_role, author_name, message, created_at`,
+            [legalCaseId, projectId, author.authorId, author.authorRole, author.authorName, message]
+        );
+
+        res.status(201).json(insert.rows[0]);
+    } catch (error) {
+        console.error('Error creating instruction:', error);
+        res.status(500).json({ error: 'Failed to create instruction', details: error.message });
     }
 });
 
