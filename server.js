@@ -90,7 +90,12 @@ app.use('/api/legal-cases', legalCasesRouter);
 app.use('/api/employee-visas', employeeVisasRouter);
 app.use('/api/visa-types', requireAuth, visaTypesRouter);
 
-app.use('/api/leads', requireAuth, leadsRouter);
+app.use('/api/leads', (req, res, next) => {
+	if (req.path === '/webhook' && req.method === 'POST') {
+		return next();
+	}
+	return requireAuth(req, res, next);
+}, leadsRouter);
 app.use('/api/prospects', requireAuth, prospectsRouter);
 app.use('/api/employees', requireAuth, employeesRouter);
 app.use('/api/appraisals', requireAuth, appraisalsRouter);
