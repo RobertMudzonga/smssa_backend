@@ -33,6 +33,90 @@ function buildCorporateAccessLink(accessToken) {
     return `${getAppBaseUrl()}/corporate-dashboard?token=${accessToken}`;
 }
 
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Build the corporate dashboard invitation email body (text + HTML).
+ * Includes the clickable access link, the raw url and access token, and
+ * step-by-step onboarding instructions for new corporate clients.
+ */
+function buildCorporateAccessEmailContent(companyName, accessToken) {
+    const accessLink = buildCorporateAccessLink(accessToken);
+    const displayName = companyName || 'your organisation';
+    const safeDisplayName = escapeHtml(displayName);
+
+    const text = [
+        `Dear ${displayName} team,`,
+        '',
+        `You have been given access to the ${displayName} corporate dashboard on ImmigratePro.`,
+        '',
+        'Click the secure link below to open your corporate dashboard. Your access token is already embedded in the link, so the page will load your company portal automatically:',
+        accessLink,
+        '',
+        `url: ${accessLink}`,
+        `access token: ${accessToken}`,
+        '',
+        'Getting started with your dashboard:',
+        '1. Click the access link above (or copy the url into your browser). The token is embedded, so your dashboard loads automatically.',
+        '2. Confirm the address begins with https://www.immigratepro.co.za and uses HTTPS before entering any information.',
+        '3. If the token is ever missing (for example after your session expires), paste the access token above when the portal asks for your access code, then select Secure Access.',
+        '4. Confirm the company name shown in the dashboard header matches your organisation before opening any record.',
+        '5. Use the dashboard tabs to manage your account:',
+        '   - Overview: quick counts and your most recent cases.',
+        '   - Cases: view your legal cases and projects, including status and current stage.',
+        '   - Foreign Employees: view and maintain employee visa and permit records.',
+        '   - Reports: view consolidated company reports.',
+        '   - Permit Application: start and track corporate permit applications.',
+        '6. For your security, the portal stores the token after your first visit and removes it from the visible URL. Keep this email so you can sign in again if your session expires.',
+        '',
+        'Important: Treat this link and access token like a password. Do not forward them or share them outside your organisation.',
+        '',
+        'If you have any trouble signing in, contact admin@immigrationspecialists.co.za. Never include your access token in a support email.'
+    ].join('\n');
+
+    const html = `
+<div style="font-family: Arial, sans-serif; color: #1a1a1a; line-height: 1.5;">
+    <p>Dear <strong>${safeDisplayName}</strong> team,</p>
+    <p>You have been given access to the <strong>${safeDisplayName}</strong> corporate dashboard on ImmigratePro.</p>
+    <p style="margin: 24px 0;">
+        <a href="${accessLink}" style="background-color: #0f766e; color: #ffffff; padding: 12px 20px; border-radius: 6px; text-decoration: none; display: inline-block;">Open your corporate dashboard</a>
+    </p>
+    <p>Or copy this link into your browser: <a href="${accessLink}">${accessLink}</a></p>
+    <p>
+        <strong>url:</strong> <a href="${accessLink}">${accessLink}</a><br>
+        <strong>access token:</strong> <code style="background-color: #f4f4f5; padding: 2px 6px; border-radius: 4px;">${accessToken}</code>
+    </p>
+    <h3 style="margin-bottom: 8px;">Getting started with your dashboard</h3>
+    <ol style="margin-top: 0; padding-left: 20px;">
+        <li>Click the button or link above. Your access token is already embedded, so the page loads your company portal automatically.</li>
+        <li>Confirm the address begins with <strong>https://www.immigratepro.co.za</strong> and uses HTTPS before entering any information.</li>
+        <li>If the token is ever missing (for example after your session expires), paste the <strong>access token</strong> above when the portal asks for your access code, then select <strong>Secure Access</strong>.</li>
+        <li>Confirm the company name shown in the dashboard header is your organisation before opening any record.</li>
+        <li>Use the dashboard tabs to manage your account:
+            <ul style="padding-left: 20px;">
+                <li><strong>Overview</strong> &ndash; quick counts and your most recent cases.</li>
+                <li><strong>Cases</strong> &ndash; view your legal cases and projects, including status and current stage.</li>
+                <li><strong>Foreign Employees</strong> &ndash; view and maintain employee visa and permit records.</li>
+                <li><strong>Reports</strong> &ndash; view consolidated company reports.</li>
+                <li><strong>Permit Application</strong> &ndash; start and track corporate permit applications.</li>
+            </ul>
+        </li>
+        <li>For your security, the portal stores the token after your first visit and removes it from the visible URL. Keep this email so you can sign in again if your session expires.</li>
+    </ol>
+    <p><strong>Important:</strong> Treat this link and access token like a password. Do not forward them or share them outside your organisation.</p>
+    <p>Need help signing in? Contact <a href="mailto:admin@immigrationspecialists.co.za">admin@immigrationspecialists.co.za</a> &mdash; never include your access token in a support email.</p>
+</div>`;
+
+    return { accessLink, text, html };
+}
+
 async function getCorporateClientById(id) {
     const result = await db.query(
         `SELECT corporate_id, name, access_token, contact_person_email, contact_people
@@ -283,10 +367,11 @@ router.post('/', requireAuth, async (req, res) => {
             // Deduplicate
             const uniqueRecipients = Array.from(new Set(recipients.filter(Boolean)));
             if (uniqueRecipients.length > 0) {
+                const { text, html } = buildCorporateAccessEmailContent(name, access_token);
                 emailService.sendBulkEmails(uniqueRecipients, {
                     subject: `Access to ${name} corporate dashboard`,
-                    text: `You have been added as a contact for ${name}. Use this link to access the corporate portal: ${accessLink}`,
-                    html: `<p>You have been added as a contact for <strong>${name}</strong>.</p><p>Open the corporate portal: <a href="${accessLink}">${accessLink}</a></p>`
+                    text,
+                    html
                 }).then(r => console.log('Corporate creation emails sent', r)).catch(e => console.error('Failed sending corporate creation emails', e));
             }
         } catch (e) {
@@ -396,10 +481,11 @@ router.post('/:id/resend-access-link', requireAuth, async (req, res) => {
         }
 
         const accessLink = buildCorporateAccessLink(corporateClient.access_token);
+        const { text, html } = buildCorporateAccessEmailContent(corporateClient.name, corporateClient.access_token);
         const emailResult = await emailService.sendBulkEmails(recipients, {
             subject: `Corporate dashboard access link for ${corporateClient.name}`,
-            text: `Here is your access link for the corporate portal:\n\n${accessLink}`,
-            html: `<p>Here is your access link for the corporate portal:</p><p><a href="${accessLink}">${accessLink}</a></p>`
+            text,
+            html
         });
 
         return res.json({
