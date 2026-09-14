@@ -12,6 +12,7 @@ router.get('/', async (req, res) => {
     const result = await db.query(`
       SELECT 
         pr.payment_request_id,
+        COALESCE(pr.request_type, 'disbursement') AS request_type,
         pr.amount,
         pr.description,
         pr.due_date,
@@ -49,13 +50,25 @@ router.get('/', async (req, res) => {
 
 // POST /api/payment-requests - create a payment request
 router.post('/', async (req, res) => {
-  const { amount, description, due_date, priority = 'Medium Priority', comment, requester_id } = req.body;
+  const { 
+    amount, 
+    description, 
+    due_date, 
+    priority = 'Medium Priority', 
+    comment, 
+    requester_id,
+    request_type = 'disbursement' 
+  } = req.body;
 
-  console.log('Creating payment request:', { amount, description, due_date, priority, comment, requester_id });
+  console.log('Creating payment request:', { amount, description, due_date, priority, comment, requester_id, request_type });
 
   if (!amount || !description || !due_date || !requester_id) {
     return res.status(400).json({ error: 'Missing required fields: amount, description, due_date, requester_id' });
   }
+
+  // Validate request_type
+  const validTypes = ['disbursement', 'operational', 'refund'];
+  const normalizedRequestType = validTypes.includes(request_type) ? request_type : 'disbursement';
 
   // Validate priority
   const validPriorities = ['High Priority', 'Medium Priority', 'Low Priority'];
@@ -72,10 +85,10 @@ router.post('/', async (req, res) => {
     const requesterName = requesterResult.rows[0]?.full_name || 'Unknown Employee';
 
     const result = await db.query(
-      `INSERT INTO payment_requests (requester_id, amount, description, due_date, priority, comment, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `INSERT INTO payment_requests (requester_id, request_type, amount, description, due_date, priority, comment, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
        RETURNING *`,
-      [requester_id, amount, description, due_date, priority, comment || null]
+      [requester_id, normalizedRequestType, amount, description, due_date, priority, comment || null]
     );
     console.log('Payment request created:', result.rows[0]);
 
