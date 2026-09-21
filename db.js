@@ -28,7 +28,9 @@ if (!connectionString) {
 // SSL with `rejectUnauthorized: false` (common for managed Postgres providers)
 // unless `DB_SSL` is explicitly set to the string 'false'. For local
 // development we default to no SSL unless `DB_SSL` is 'true'.
-const poolConfig = { connectionString };
+// Default to 50 connections; override with DB_POOL_MAX if the Postgres plan's
+// connection limit requires a different ceiling.
+const poolConfig = { connectionString, max: Number(process.env.DB_POOL_MAX) || 50 };
 
 // Decide SSL based on explicit DB_SSL or the target host in DATABASE_URL.
 // Priority: if DB_SSL === 'false' -> disable. Else if DB_SSL === 'true' -> enable.
