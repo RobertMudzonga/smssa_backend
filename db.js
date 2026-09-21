@@ -30,7 +30,15 @@ if (!connectionString) {
 // development we default to no SSL unless `DB_SSL` is 'true'.
 // Default to 50 connections; override with DB_POOL_MAX if the Postgres plan's
 // connection limit requires a different ceiling.
-const poolConfig = { connectionString, max: Number(process.env.DB_POOL_MAX) || 50 };
+// statement_timeout/lock_timeout keep a blocked query (e.g. a DDL migration
+// waiting on a lock held by another session) from hanging forever and
+// stalling the whole deploy - it now fails after 30s/10s instead.
+const poolConfig = {
+    connectionString,
+    max: Number(process.env.DB_POOL_MAX) || 50,
+    statement_timeout: Number(process.env.DB_STATEMENT_TIMEOUT_MS) || 30000,
+    lock_timeout: Number(process.env.DB_LOCK_TIMEOUT_MS) || 10000,
+};
 
 // Decide SSL based on explicit DB_SSL or the target host in DATABASE_URL.
 // Priority: if DB_SSL === 'false' -> disable. Else if DB_SSL === 'true' -> enable.
